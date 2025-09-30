@@ -23,6 +23,8 @@ st.sidebar.header('⚙️ Parâmetros de Análise')
 @st.cache_data
 def get_tickers_from_csv():
     """Carrega a lista de tickers de um arquivo CSV local."""
+    # Este arquivo CSV deve estar na mesma pasta que o script Python
+    # Ele deve conter as colunas 'Ticker' e 'Nome'
     file_path = 'acoes-listadas-b3.csv'
     try:
         df = pd.read_csv(file_path)
@@ -31,7 +33,7 @@ def get_tickers_from_csv():
         return df
     except FileNotFoundError:
         st.sidebar.error(f"Arquivo '{file_path}' não encontrado. Usando lista de fallback.")
-        fallback_data = {'ticker': ['PETR4', 'VALE3', 'ITUB4'], 'nome': ['Petrobras', 'Vale', 'Itaú Unibanco']}
+        fallback_data = {'ticker': ['PETR4', 'VALE3', 'ITUB4', 'MGLU3'], 'nome': ['Petrobras', 'Vale', 'Itaú Unibanco', 'Magazine Luiza']}
         fallback_df = pd.DataFrame(fallback_data)
         fallback_df['display'] = fallback_df['nome'] + ' (' + fallback_df['ticker'] + ')'
         return fallback_df
@@ -46,7 +48,7 @@ def load_data(ticker, start, end):
 
 def calculate_indicators(data):
     """Calcula os indicadores técnicos para o DataFrame."""
-    # --- CORREÇÃO: Cálculo de RSI com Média Móvel Exponencial (padrão da indústria) ---
+    # RSI (Índice de Força Relativa)
     delta = data['Close'].diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
@@ -66,7 +68,7 @@ def calculate_indicators(data):
     data['BB_Superior'] = data['BB_Media'] + 2 * data['Close'].rolling(window=20).std()
     data['BB_Inferior'] = data['BB_Media'] - 2 * data['Close'].rolling(window=20).std()
     
-    # Volatilidade
+    # Volatilidade (Anualizada)
     data['Daily Return'] = data['Close'].pct_change()
     data['Volatility'] = data['Daily Return'].rolling(window=30).std() * (252**0.5)
     return data
@@ -115,8 +117,8 @@ else:
         fig_price.add_trace(go.Scatter(x=data.index, y=data['Close'], name='Preço de Fechamento', line=dict(color='blue')))
         fig_price.add_trace(go.Scatter(x=data.index, y=data['MM_Curta'], name='Média Móvel 20p', line=dict(color='orange', dash='dash')))
         fig_price.add_trace(go.Scatter(x=data.index, y=data['MM_Longa'], name='Média Móvel 50p', line=dict(color='purple', dash='dash')))
-        fig_price.add_trace(go.Scatter(x=data.index, y=data['BB_Superior'], name='Banda Superior', line=dict(color='gray', width=1, dash='dot')))
-        fig_price.add_trace(go.Scatter(x=data.index, y=data['BB_Inferior'], name='Banda Inferior', line=dict(color='gray', width=1, dash='dot')))
+        fig_price.add_trace(go.Scatter(x=data.index, y=data['BB_Superior'], name='Banda Superior', line=dict(color='gray', width=1, dash='dot'), fill='tonexty', fillcolor='rgba(128,128,128,0.1)'))
+        fig_price.add_trace(go.Scatter(x=data.index, y=data['BB_Inferior'], name='Banda Inferior', line=dict(color='gray', width=1, dash='dot'), fill='tonexty', fillcolor='rgba(128,128,128,0.1)'))
         st.plotly_chart(fig_price, use_container_width=True)
 
         st.subheader('📊 Índice de Força Relativa (RSI)')
@@ -132,7 +134,7 @@ else:
         
         col1, col2 = st.columns([3, 1])
         with col1:
-             fig_vol = px.line(data, x=data.index, y='Volatility', title='Volatilidade Anualizada (30 dias)')
+             fig_vol = px.line(data, x=data.index, y='Volatility', title='Volatilidade Anualizada (janela de 30 dias)')
              st.plotly_chart(fig_vol, use_container_width=True)
         with col2:
             st.metric("Volatilidade Atual", f"{current_vol:.3f}")
@@ -140,16 +142,19 @@ else:
 
     with tab3:
         st.subheader('🏁 Comparativo com o IBOVESPA')
-        comp_df = pd.DataFrame({
-            ticker_symbol: data['Close'] / data['Close'].iloc[0],
-            'IBOVESPA': ibov['Close'] / ibov['Close'].iloc[0]
-        })
-        fig_comp = px.line(comp_df, x=comp_df.index, y=comp_df.columns, title='Performance Normalizada: Ação vs IBOVESPA')
-        st.plotly_chart(fig_comp, use_container_width=True)
+        if not ibov.empty:
+            comp_df = pd.DataFrame({
+                ticker_symbol: data['Close'] / data['Close'].iloc[0],
+                'IBOVESPA': ibov['Close'] / ibov['Close'].iloc[0]
+            })
+            fig_comp = px.line(comp_df, x=comp_df.index, y=comp_df.columns, title='Performance Normalizada: Ação vs IBOVESPA')
+            st.plotly_chart(fig_comp, use_container_width=True)
+        else:
+            st.warning("Não foi possível carregar os dados do IBOVESPA para comparação.")
 
     st.markdown("---")
     
-    # --- MELHORIA: Seção de Machine Learning mais Profissional ---
+    # --- Seção de Machine Learning ---
     with st.expander("🧠 Análise Preditiva com Machine Learning", expanded=True):
         st.write("""
         Esta seção utiliza um modelo de Machine Learning (Random Forest) para prever a volatilidade do ativo no próximo dia útil. 
@@ -158,7 +163,7 @@ else:
 
         if st.button('Executar Análise Preditiva'):
             df_model = data[['Volatility']].copy().dropna()
-            if len(df_model) < 20: # Aumenta o requisito mínimo de dados
+            if len(df_model) < 20: 
                 st.warning("⚠️ Dados históricos insuficientes para treinar e avaliar o modelo de forma confiável.")
             else:
                 for i in range(1, 6):
@@ -191,7 +196,7 @@ else:
                 st.subheader("Previsão para o Próximo Dia Útil")
                 prediction = model.predict(X.iloc[-1:].values)
                 
-                # --- MELHORIA: Lógica de Data e Cor ---
+                # Lógica de Data
                 last_date = data.index[-1]
                 next_day = last_date + pd.Timedelta(days=1)
                 if next_day.weekday() == 5:  # Sábado
@@ -201,16 +206,19 @@ else:
                 next_day_str = next_day.strftime('%d/%m/%Y')
 
                 predicted_vol = prediction[0]
-                vol_q1 = y.quantile(0.25)
-                vol_q3 = y.quantile(0.75)
-
-                if predicted_vol < vol_q1:
+                
+                # --- CORREÇÃO: Lógica de classificação de volatilidade com valores fixos ---
+                # A lógica anterior usava quantis, o que causava inconsistências entre ativos diferentes.
+                # Ativos com volatilidade histórica baixa poderiam ter uma previsão "alta" (ex: 0.43)
+                # enquanto ativos com histórico de volatilidade alta poderiam ter uma previsão "média" (ex: 0.55).
+                # A utilização de limiares fixos torna a comparação mais justa e intuitiva.
+                if predicted_vol < 0.30:  # Abaixo de 30% = Baixa
                     status_text = "Baixa Volatilidade"
                     status_color = "#28a745"  # Verde
-                elif predicted_vol > vol_q3:
+                elif predicted_vol >= 0.60: # Acima de 60% = Alta
                     status_text = "Alta Volatilidade"
                     status_color = "#dc3545"  # Vermelho
-                else:
+                else: # Entre 30% e 60% = Média
                     status_text = "Média Volatilidade"
                     status_color = "#ffc107"  # Amarelo
                 
@@ -229,9 +237,10 @@ else:
     st.markdown("---")
     st.caption(f"📅 Última atualização dos preços: **{last_update_date}** — Dados fornecidos pelo Yahoo Finance (podem ter atraso).")
 
-         # --- NOVO: Rodapé de Autoria ---
+    # --- Rodapé de Autoria ---
     st.markdown("---")
     st.markdown("<p style='text-align: center; color: #888;'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)
+
 
 
 

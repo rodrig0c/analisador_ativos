@@ -79,42 +79,48 @@ def calculate_indicators(data):
 # --- VERSÃO CORRIGIDA DA FUNÇÃO ---
 def prepare_advanced_features(data, lookback_days=60, forecast_days=5):
     """
-    Prepara features com janela temporal expandida
-    lookback_days: quantos dias no passado considerar
-    forecast_days: prever para quantos dias à frente
+    Prepara features com janela temporal expandida, com limpeza de dados precisa.
     """
     df = data[['Close', 'Volume', 'RSI', 'MM_Curta', 'MM_Longa', 'Volatility']].copy()
-    
+
     # Features de preço com múltiplas janelas
     periods = [1, 3, 5, 10, 20]
     for days in periods:
         df[f'return_{days}d'] = df['Close'].pct_change(days)
-        df[f'volume_ma_{days}d'] = df['Volume'].rolling(days).mean()
+        df[f'volume_ma_{days}d'] = df['Volume'].rolling(window=days).mean()
         if days <= 20:
-            df[f'high_{days}d'] = df['Close'].rolling(days).max()
-            df[f'low_{days}d'] = df['Close'].rolling(days).min()
-        df[f'volatility_{days}d'] = df['Close'].pct_change().rolling(days).std()
-    
+            df[f'high_{days}d'] = df['Close'].rolling(window=days).max()
+            df[f'low_{days}d'] = df['Close'].rolling(window=days).min()
+        df[f'volatility_{days}d'] = df['Close'].pct_change().rolling(window=days).std()
+
     # Features técnicas avançadas
     df['price_vs_ma20'] = df['Close'] / df['MM_Curta']
     df['price_vs_ma50'] = df['Close'] / df['MM_Longa']
     df['ma_cross'] = (df['MM_Curta'] > df['MM_Longa']).astype(int)
-    
+
     # Target: Retorno futuro (5 dias)
     df['target_future_return'] = df['Close'].shift(-forecast_days) / df['Close'] - 1
-    
+
     # Target: Direção (1 = sobe, 0 = desce)
     df['target_direction'] = (df['target_future_return'] > 0).astype(int)
-    
-    # --- ✅ CORREÇÃO: Tratamento robusto de dados ausentes e infinitos ---
-    # 1. Substituir valores infinitos (resultantes de divisão por zero) por NaN
+
+    # --- ✅ CORREÇÃO DEFINITIVA ---
+
+    # 1. Definir a lista de colunas que efetivamente serão as features do modelo.
+    #    Adicionei 'RSI' e 'Volatility' pois são bons preditores.
+    feature_columns = [col for col in df.columns if col.startswith(('return_', 'volume_ma_', 'high_', 'low_', 'volatility_', 'price_vs_', 'ma_cross'))]
+    feature_columns.extend(['RSI', 'Volatility'])
+
+    # 2. Definir as colunas do alvo (target)
+    target_columns = ['target_future_return', 'target_direction']
+
+    # 3. Substituir valores infinitos (resultantes de divisão por zero) por NaN
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    
-    # 2. Remover TODAS as linhas que contenham QUALQUER valor NaN.
-    #    Isso garante que o modelo receba apenas dados completos, eliminando
-    #    NaNs do início (janelas móveis) e do fim (alvo futuro).
-    df.dropna(inplace=True)
-    
+
+    # 4. Remover linhas com NaN APENAS no subconjunto de colunas que serão usadas (features + target).
+    #    Esta é a mudança crucial que resolve o problema.
+    df.dropna(subset=feature_columns + target_columns, inplace=True)
+
     return df
 
 def create_advanced_model():
@@ -225,31 +231,39 @@ else:
         - Features: Preço, Volume, RSI, Médias Móveis, Volatilidade
         - Modelos: Random Forest, Gradient Boosting, SVR, Neural Network
         """)
+        # (Dentro do "with st.expander(...)")
+
+if st.button('Executar Previsão de Preço Avançada'):
+    with st.spinner('Processando dados e treinando modelos...'):
+        # Preparar dados avançados com a nova função
+        advanced_data = prepare_advanced_features(data, lookback_days=60, forecast_days=5)
         
-        if st.button('Executar Previsão de Preço Avançada'):
-            with st.spinner('Processando dados e treinando modelos...'):
-                # Preparar dados avançados
-                advanced_data = prepare_advanced_features(data, lookback_days=60, forecast_days=5)
-                
-                # Verificar se temos dados suficientes após o processamento
-                if len(advanced_data) < 50:
-                    st.warning(f"⚠️ Dados insuficientes para análise avançada. Necessários pelo menos 50 dias úteis após processamento. Disponíveis: {len(advanced_data)} dias.")
-                    st.info(f"💡 Dica: Selecione um período mais longo (a partir de 2019) para ter dados suficientes.")
-                else:
-                    # Separar features e target
-                    feature_columns = [col for col in advanced_data.columns if not col.startswith('target_')]
-                    X = advanced_data[feature_columns]
-                    y_return = advanced_data['target_future_return']  # Retorno percentual
-                    y_direction = advanced_data['target_direction']    # Direção
-                    
-                    # Mostrar informações sobre os dados
-                    st.info(f"📊 Dados disponíveis para treinamento: {len(X)} dias úteis")
-                    
-                    # Split temporal (não shuffle para time series)
-                    split_idx = int(len(X) * 0.8)
-                    X_train, X_test = X[:split_idx], X[split_idx:]
-                    y_train_return, y_test_return = y_return[:split_idx], y_return[split_idx:]
-                    y_train_dir, y_test_dir = y_direction[:split_idx], y_direction[split_idx:]
+        # Verificar se temos dados suficientes após o processamento
+        if len(advanced_data) < 50:
+            st.warning(f"⚠️ Dados insuficientes para análise avançada. Necessários pelo menos 50 dias úteis após processamento. Disponíveis: {len(advanced_data)} dias.")
+            st.info(f"💡 Dica: Selecione um período mais longo (a partir de 2019) para ter dados suficientes.")
+        else:
+            # --- ✅ CORREÇÃO: Garantir que as colunas de X correspondam às usadas na limpeza ---
+            # Selecionar exatamente as mesmas features definidas na função de preparação
+            feature_columns = [col for col in advanced_data.columns if col.startswith(('return_', 'volume_ma_', 'high_', 'low_', 'volatility_', 'price_vs_', 'ma_cross'))]
+            feature_columns.extend(['RSI', 'Volatility'])
+
+            X = advanced_data[feature_columns]
+            y_return = advanced_data['target_future_return']
+            y_direction = advanced_data['target_direction']
+            
+            # Mostrar informações sobre os dados
+            st.info(f"📊 Dados disponíveis para treinamento: {len(X)} dias úteis")
+            
+            # O restante do seu código a partir daqui continua igual...
+            # Split temporal
+            split_idx = int(len(X) * 0.8)
+            X_train, X_test = X[:split_idx], X[split_idx:]
+            y_train_return, y_test_return = y_return[:split_idx], y_return[split_idx:]
+            y_train_dir, y_test_dir = y_direction[:split_idx], y_direction[split_idx:]
+            
+            # Treinamento, avaliação, etc.
+            # ...
                     
                     # Treinar modelos
                     models = create_advanced_model()

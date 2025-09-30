@@ -134,20 +134,6 @@ def volatility_label_and_color(v):
         return "VOLATILIDADE MÉDIA", "#F1C40F"
     return "BAIXA VOLATILIDADE", "#2ECC71"
 
-# Feature explanations (short)
-FEATURE_DOC = {
-    'return_Xd': "Retorno percentual sobre X dias (close_t / close_t-X - 1).",
-    'high_Xd': "Máxima observada nos últimos X dias.",
-    'low_Xd': "Mínima observada nos últimos X dias.",
-    'volatility_Xd': "Desvio padrão dos retornos na janela X.",
-    'volume_ma_Xd': "Média móvel de volume em X dias.",
-    'price_vs_ma20': "Preço atual dividido pela MA20 (relação preço/media20).",
-    'price_vs_ma50': "Preço atual dividido pela MA50.",
-    'ma_cross': "Indicador binário (1 se MA20 > MA50).",
-    'RSI': "Índice de Força Relativa (momentum).",
-    'Volatility': "Volatilidade anualizada (janela 30 dias)."
-}
-
 # --- Load tickers and data ---
 tickers_df = get_tickers_from_csv()
 selected_display = st.sidebar.selectbox('Escolha a Ação', tickers_df['display'])
@@ -188,7 +174,7 @@ c3.metric("💰 Último Preço", f"R$ {last_price:.2f}")
 c4.metric("📊 Variação (Dia)", f"{price_change:+.2f} R$", f"{percent_change:+.2f}%")
 st.markdown("---")
 
-# --- Charts as before (kept) ---
+# --- Charts as before ---
 tab1, tab2, tab3 = st.tabs(["Preço e Indicadores", "Volatilidade", "Comparativo com IBOVESPA"])
 if viz_days is None:
     view_slice = slice(None)
@@ -237,7 +223,7 @@ with tab3:
 
 st.markdown("---")
 
-# --- Volatilidade (simples) section (independent) ---
+# --- Volatilidade (simples) section ---
 st.subheader('🧠 Volatilidade — Modelo Simples (RandomForest)')
 st.write("Modelo simples para prever volatilidade do próximo dia útil.")
 if st.button('Executar Previsão de Volatilidade (Simples)', key='run_vol_simple'):
@@ -276,55 +262,26 @@ if st.session_state.get('vol_result') is not None:
 
 st.markdown("---")
 
-# --- Advanced prediction section (separate block) ---
+# --- Advanced prediction section (simplified header + progress bar only) ---
 st.subheader('🔮 Previsão de Preço Avançada (Machine Learning)')
 st.write("Clique em Executar. Usa apenas dados reais do Yahoo Finance no período selecionado. Resultado não sobrescreve a seção simples.")
 
 if st.button('Executar Previsão de Preço Avançada', key='run_advanced'):
-    # prepare features and explain immediately
     adv_df, used_features = prepare_advanced_features(data, forecast_days=5)
-
-    # Clarify what 'linhas válidas' means and explain features succinctly
-    linhas_validas = len(adv_df)
-    total_historico = len(data)
-    feature_list = used_features.copy()
-    # build small human readable feature explanation list
-    explanations = []
-    for f in feature_list:
-        if f.startswith('return_'):
-            explanations.append(f"{f}: Retorno percentual (ex.: retorno em N dias).")
-        elif f.startswith('high_'):
-            explanations.append(f"{f}: Máxima em janela.")
-        elif f.startswith('low_'):
-            explanations.append(f"{f}: Mínima em janela.")
-        elif f.startswith('volatility_'):
-            explanations.append(f"{f}: Volatilidade (desvio) em janela.")
-        elif f.startswith('volume_ma_'):
-            explanations.append(f"{f}: Média móvel de volume.")
-        elif f in ('price_vs_ma20','price_vs_ma50'):
-            explanations.append(f"{f}: Relação preço/MA.")
-        elif f == 'ma_cross':
-            explanations.append(f"{f}: 1 se MA20 > MA50, senão 0.")
-        elif f == 'RSI':
-            explanations.append(f"{f}: Índice de Força Relativa.")
-        elif f == 'Volatility':
-            explanations.append(f"{f}: Volatilidade anualizada (janela 30 dias).")
-        else:
-            explanations.append(f"{f}: feature técnica.")
-
+    dias_utilizados = len(adv_df)
+    # show only the single requested header line
     st.markdown(
         f"<div style='background:#0b1220;padding:10px;border-radius:8px'>"
-        f"<span style='color:#fff;font-weight:700'>Período solicitado:</span> <span style='color:#ddd;margin-left:8px'>{pd.to_datetime(start_date).strftime('%d/%m/%Y')} — {pd.to_datetime(end_date).strftime('%d/%m/%Y')}</span><br>"
-        f"<span style='color:#fff;font-weight:700'>Dias no histórico carregado:</span> <span style='color:#ddd;margin-left:8px'>{total_historico}</span><br>"
-        f"<span style='color:#fff;font-weight:700'>Linhas válidas após limpeza:</span> <span style='color:#ddd;margin-left:8px'>{linhas_validas} (dias úteis com todas as features e target disponíveis)</span><br>"
-        f"<span style='color:#fff;font-weight:700'>Features usadas (principais):</span> <span style='color:#ddd;margin-left:8px'>{', '.join(feature_list[:10])}{'...' if len(feature_list)>10 else ''}</span>"
+        f"<span style='color:#fff;font-weight:700'>Dias solicitados:</span> "
+        f"<span style='color:#ddd;margin-left:8px'>{pd.to_datetime(start_date).strftime('%d/%m/%Y')} — {pd.to_datetime(end_date).strftime('%d/%m/%Y')} "
+        f"(<strong style=\"color:#fff\">{dias_utilizados} dias utilizados</strong>)</span>"
         f"</div>", unsafe_allow_html=True
     )
 
-    if linhas_validas < 60:
-        st.warning(f"Dados insuficientes para análise avançada. Linhas válidas: {linhas_validas}. Aumente o intervalo.")
+    if dias_utilizados < 60:
+        st.warning(f"Dados insuficientes para análise avançada. Linhas válidas: {dias_utilizados}. Aumente o intervalo.")
     else:
-        # training with progress
+        # prepare train/test and scale
         X = adv_df[used_features].copy()
         y_return = adv_df['target_future_return'].copy()
         y_dir = adv_df['target_direction'].copy()
@@ -355,11 +312,9 @@ if st.button('Executar Previsão de Preço Avançada', key='run_advanced'):
             progress.progress(int(((i+1)/n_models)*100))
         status.text("Treinamento concluído!")
 
-        # per-model future predictions using LAST AVAILABLE REAL FEATURES
-        # IMPORTANT: use the last **real** date from 'data' as base for future dates
+        # per-model future predictions using last real features
         current_price = float(data['Close'].iloc[-1])
         current_date = pd.to_datetime(data.index[-1])  # last real date
-        # Use last row of X (features aligned to historical last sample)
         last_feat = X.iloc[-1:].copy()
         try:
             last_scaled = scaler.transform(last_feat)
@@ -384,7 +339,7 @@ if st.button('Executar Previsão de Preço Avançada', key='run_advanced'):
         capped = float(np.clip(ensemble_future, -0.5, 0.5))
         daily_rate = (1 + capped)**(1/5) - 1
 
-        # Build future dates starting from current_date + BDay(1..5) => ensures we predict FUTURE, not past
+        # Build future dates starting from current_date + BDay(1..5) => ensures we predict FUTURE
         temp_price = current_price
         predicted_prices_data = []
         for i_day in range(1,6):
@@ -399,7 +354,7 @@ if st.button('Executar Previsão de Preço Avançada', key='run_advanced'):
             })
         predictions_df = pd.DataFrame(predicted_prices_data)
 
-        # Confidence computation (robust)
+        # Confidence computation
         agreement = max(0.0, 1.0 - min(std_preds, MAX_REASONABLE_STD) / MAX_REASONABLE_STD)
         magnitude_penalty = max(0.0, 1.0 - (abs(ensemble_future) / 0.5))
         confidence = agreement * magnitude_penalty
@@ -408,13 +363,13 @@ if st.button('Executar Previsão de Preço Avançada', key='run_advanced'):
         confidence_pct = confidence * 100.0
         rec_label, rec_color = confidence_label_and_color(confidence)
 
-        # Store results (with clear fields and display-ready date format)
+        # Store results
         st.session_state['advanced_result'] = {
             'timestamp': pd.Timestamp.now().isoformat(),
             'ticker': ticker_symbol,
             'data_used_period': f"{pd.to_datetime(start_date).strftime('%d/%m/%Y')} — {pd.to_datetime(end_date).strftime('%d/%m/%Y')}",
-            'rows_historico': int(total_historico),
-            'rows_validas': int(linhas_validas),
+            'rows_historico': int(len(data)),
+            'rows_validas': int(dias_utilizados),
             'features_used': used_features,
             'per_model_return_predictions': {k: (None if pd.isna(v) else float(v)) for k,v in per_model_future.items()},
             'ensemble_future_return': float(ensemble_future),
@@ -426,40 +381,20 @@ if st.button('Executar Previsão de Preço Avançada', key='run_advanced'):
             'rec_color': rec_color
         }
 
-# --- Display advanced results (won't be cleared by running simple) ---
+# --- Display advanced results (single header line only) ---
 if st.session_state.get('advanced_result') is not None:
     adv = st.session_state['advanced_result']
     st.subheader("Resultados - Previsão Avançada")
-    # Header: explicit data used and meaning of 'linhas válidas'
+    # Only the single requested header line (Dias solicitados + (dias utilizados))
     st.markdown(
         f"<div style='background:#0b1220;padding:10px;border-radius:8px'>"
-        f"<span style='color:#fff;font-weight:700'>Período usado:</span> <span style='color:#ddd;margin-left:8px'>{adv['data_used_period']}</span><br>"
-        f"<span style='color:#fff;font-weight:700'>Tamanho do histórico carregado:</span> <span style='color:#ddd;margin-left:8px'>{adv['rows_historico']} linhas (dias)</span><br>"
-        f"<span style='color:#fff;font-weight:700'>Linhas válidas após limpeza:</span> <span style='color:#ddd;margin-left:8px'>{adv['rows_validas']} (dias úteis com todas as features e target disponíveis)</span><br>"
-        f"<span style='color:#fff;font-weight:700'>Features utilizadas (exemplos):</span> <span style='color:#ddd;margin-left:8px'>{', '.join(adv['features_used'][:12])}{'...' if len(adv['features_used'])>12 else ''}</span>"
+        f"<span style='color:#fff;font-weight:700'>Dias solicitados:</span> "
+        f"<span style='color:#ddd;margin-left:8px'>{adv['data_used_period']} "
+        f"(<strong style=\"color:#fff\">{adv['rows_validas']} dias utilizados</strong>)</span>"
         f"</div>", unsafe_allow_html=True
     )
 
-    # Provide short feature definitions (collapsible)
-    with st.expander("O que significam 'linhas válidas' e as principais features usadas (clique para abrir)"):
-        st.markdown("<ul>", unsafe_allow_html=True)
-        st.markdown(f"<li><strong>Linhas válidas:</strong> dias úteis do histórico que permaneceram depois que removemos linhas com valores faltantes ou inválidos nas features e no target. Estes são os pontos que o modelo realmente viu.</li>", unsafe_allow_html=True)
-        # show up to 20 feature explanations
-        for f in adv['features_used'][:40]:
-            desc = "feature técnica"
-            if f.startswith('return_'): desc = "retorno percentual em N dias"
-            elif f.startswith('high_'): desc = "máxima na janela N dias"
-            elif f.startswith('low_'): desc = "mínima na janela N dias"
-            elif f.startswith('volatility_'): desc = "volatilidade (desvio) em janela N"
-            elif f.startswith('volume_ma_'): desc = "média móvel de volume em N dias"
-            elif f in ('price_vs_ma20','price_vs_ma50'): desc = "relação preço / média móvel"
-            elif f == 'ma_cross': desc = "1 se MA20 > MA50, senão 0"
-            elif f == 'RSI': desc = "Índice de Força Relativa"
-            elif f == 'Volatility': desc = "Volatilidade anualizada (janela 30 dias)"
-            st.markdown(f"<li><strong>{f}:</strong> {desc}</li>", unsafe_allow_html=True)
-        st.markdown("</ul>", unsafe_allow_html=True)
-
-    # Concordância, Score e Recomendação (texto colorido, dark background)
+    # Concordância, Score e Recomendação as colored text
     concord_pct = adv.get('concordance_pct', 0.0)
     confidence_pct = adv.get('confidence_pct', 0.0)
     rec_label = adv.get('rec_label', 'BAIXA CONFIANÇA')
@@ -471,13 +406,12 @@ if st.session_state.get('advanced_result') is not None:
         f"<div style='color:#ddd;font-size:16px'><strong>Recomendação:</strong> <span style='color:{rec_color};font-size:20px;font-weight:800'>{rec_label}</span></div>"
         f"</div>", unsafe_allow_html=True)
 
-    # Highlighted big card for the 5-day predictions (important)
+    # Highlighted big card for the 5-day predictions (larger font for price)
     preds_display = pd.DataFrame(adv['predictions_df'])
     st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
     st.markdown("<div style='background:#071626;padding:12px;border-radius:10px'>", unsafe_allow_html=True)
     st.markdown("<div style='color:#fff;font-size:18px;font-weight:700;margin-bottom:8px'>Projeção de Preço para os Próximos 5 Dias (baseado na data mais recente disponível)</div>", unsafe_allow_html=True)
 
-    # big list with larger font
     for row in preds_display.to_dict(orient='records'):
         date_str = row['Data']
         price = float(row['Preço Previsto'])
@@ -485,19 +419,19 @@ if st.session_state.get('advanced_result') is not None:
         st.markdown(
             f"<div style='display:flex;justify-content:space-between;align-items:center;padding:8px 6px;border-radius:6px;margin-bottom:6px'>"
             f"<div style='color:#ddd;font-size:16px'>{date_str}</div>"
-            f"<div style='color:#00BFFF;font-size:24px;font-weight:800'>R$ {price:,.2f}</div>"
+            f"<div style='color:#00BFFF;font-size:26px;font-weight:900'>R$ {price:,.2f}</div>"
             f"<div style='color:#ddd;font-size:16px'>{var:+.2%}</div>"
             f"</div>", unsafe_allow_html=True
         )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # small per-model table
+    # per-model predictions
     per_model_df = pd.DataFrame([{'Modelo':k,'Retorno Estimado':v} for k,v in adv['per_model_return_predictions'].items()])
     if not per_model_df.empty:
         st.subheader("Previsões por modelo (retorno estimado para 5 dias)")
         st.dataframe(per_model_df.style.format({'Retorno Estimado':'{:+.4f}'}), use_container_width=True)
 
-    # Export button (single button; already labeled)
+    # Export button
     mem = io.BytesIO()
     with zipfile.ZipFile(mem, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
         preds_df = pd.DataFrame(adv['predictions_df'])
@@ -526,7 +460,6 @@ if uploaded is not None:
         z = zipfile.ZipFile(io.BytesIO(uploaded.read()))
         if 'predictions.csv' in z.namelist():
             preds = pd.read_csv(io.BytesIO(z.read('predictions.csv')), dtype=str)
-            # attempt parse dates dayfirst true
             preds['Data'] = pd.to_datetime(preds['Data'], dayfirst=True, errors='coerce')
             preds_display = preds.copy()
             preds_display['Data'] = preds_display['Data'].dt.strftime('%d/%m/%Y')
@@ -586,8 +519,4 @@ last_update = pd.to_datetime(data.index[-1]).strftime('%d/%m/%Y')
 st.markdown("---")
 st.caption(f"Última atualização dos preços: **{last_update}** — Dados: Yahoo Finance.")
 st.markdown("<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)
-
-
-
-
 

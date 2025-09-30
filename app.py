@@ -231,38 +231,35 @@ else:
         - Features: Preço, Volume, RSI, Médias Móveis, Volatilidade
         - Modelos: Random Forest, Gradient Boosting, SVR, Neural Network
         """)
-        # (Dentro do "with st.expander(...)")
 
-    if st.button('Executar Previsão de Preço Avançada'):
-     with st.spinner('Processando dados e treinando modelos...'):
-        # Preparar dados avançados com a nova função
-        advanced_data = prepare_advanced_features(data, lookback_days=60, forecast_days=5)
-        
-        # Verificar se temos dados suficientes após o processamento
-        if len(advanced_data) < 50:
-            st.warning(f"⚠️ Dados insuficientes para análise avançada. Necessários pelo menos 50 dias úteis após processamento. Disponíveis: {len(advanced_data)} dias.")
-            st.info(f"💡 Dica: Selecione um período mais longo (a partir de 2019) para ter dados suficientes.")
-             else:
-            # --- ✅ CORREÇÃO: Garantir que as colunas de X correspondam às usadas na limpeza ---
-            # Selecionar exatamente as mesmas features definidas na função de preparação
-                   feature_columns = [col for col in advanced_data.columns if col.startswith(('return_', 'volume_ma_', 'high_', 'low_', 'volatility_', 'price_vs_', 'ma_cross'))]
-                   feature_columns.extend(['RSI', 'Volatility'])
+        if st.button('Executar Previsão de Preço Avançada'):
+            with st.spinner('Processando dados e treinando modelos...'):
+                # Preparar dados avançados com a nova função
+                advanced_data = prepare_advanced_features(data, lookback_days=60, forecast_days=5)
+                
+                # Verificar se temos dados suficientes após o processamento
+                if len(advanced_data) < 50:
+                    st.warning(f"⚠️ Dados insuficientes para análise avançada. Necessários pelo menos 50 dias úteis após processamento. Disponíveis: {len(advanced_data)} dias.")
+                    st.info(f"💡 Dica: Selecione um período mais longo (a partir de 2019) para ter dados suficientes.")
+                else:
+                    # --- ✅ CORREÇÃO: Garantir que as colunas de X correspondam às usadas na limpeza ---
+                    # Selecionar exatamente as mesmas features definidas na função de preparação
+                    feature_columns = [col for col in advanced_data.columns if col.startswith(('return_', 'volume_ma_', 'high_', 'low_', 'volatility_', 'price_vs_', 'ma_cross'))]
+                    feature_columns.extend(['RSI', 'Volatility'])
 
                     X = advanced_data[feature_columns]
                     y_return = advanced_data['target_future_return']
                     y_direction = advanced_data['target_direction']
-            
-            # Mostrar informações sobre os dados
+                    
+                    # Mostrar informações sobre os dados
                     st.info(f"📊 Dados disponíveis para treinamento: {len(X)} dias úteis")
-            
-            # O restante do seu código a partir daqui continua igual...
-            # Split temporal
+                    
+                    # Split temporal
                     split_idx = int(len(X) * 0.8)
                     X_train, X_test = X[:split_idx], X[split_idx:]
                     y_train_return, y_test_return = y_return[:split_idx], y_return[split_idx:]
                     y_train_dir, y_test_dir = y_direction[:split_idx], y_direction[split_idx:]
-            
-             
+                    
                     # Treinar modelos
                     models = create_advanced_model()
                     trained_models = {}
@@ -521,7 +518,5 @@ else:
     # --- Rodapé de Autoria ---
     st.markdown("---")
     st.markdown("<p style='text-align: center; color: #888;'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #888;'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)
-
 
 

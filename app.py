@@ -28,8 +28,6 @@ st.sidebar.header('⚙️ Parâmetros de Análise')
 @st.cache_data
 def get_tickers_from_csv():
     """Carrega a lista de tickers de um arquivo CSV local."""
-    # Este arquivo CSV deve estar na mesma pasta que o script Python
-    # Ele deve conter as colunas 'Ticker' e 'Nome'
     file_path = 'acoes-listadas-b3.csv'
     try:
         df = pd.read_csv(file_path)
@@ -78,21 +76,21 @@ def calculate_indicators(data):
     data['Volatility'] = data['Daily Return'].rolling(window=30).std() * (252**0.5)
     return data
 
-# --- NOVAS FUNÇÕES PARA PREVISÃO AVANÇADA ---
+# --- VERSÃO CORRIGIDA DA FUNÇÃO ---
 def prepare_advanced_features(data, lookback_days=60, forecast_days=5):
     """
     Prepara features com janela temporal expandida
-    lookback_days: quantos dias no passado considerar (60 = ~3 meses)
+    lookback_days: quantos dias no passado considerar
     forecast_days: prever para quantos dias à frente
     """
     df = data[['Close', 'Volume', 'RSI', 'MM_Curta', 'MM_Longa', 'Volatility']].copy()
     
-    # Features de preço com múltiplas janelas - usar períodos mais curtos também
-    periods = [1, 3, 5, 10, 20]  # Reduzir períodos máximos para ter mais dados
+    # Features de preço com múltiplas janelas
+    periods = [1, 3, 5, 10, 20]
     for days in periods:
         df[f'return_{days}d'] = df['Close'].pct_change(days)
         df[f'volume_ma_{days}d'] = df['Volume'].rolling(days).mean()
-        if days <= 20:  # Apenas para períodos mais curtos para evitar muitos NaN
+        if days <= 20:
             df[f'high_{days}d'] = df['Close'].rolling(days).max()
             df[f'low_{days}d'] = df['Close'].rolling(days).min()
         df[f'volatility_{days}d'] = df['Close'].pct_change().rolling(days).std()
@@ -108,13 +106,14 @@ def prepare_advanced_features(data, lookback_days=60, forecast_days=5):
     # Target: Direção (1 = sobe, 0 = desce)
     df['target_direction'] = (df['target_future_return'] > 0).astype(int)
     
-    # Remover NaN de forma mais conservadora - manter mais dados
-    # Primeiro preencher alguns NaN com valores razoáveis
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
-    df[numeric_cols] = df[numeric_cols].fillna(method='ffill').fillna(method='bfill')
+    # --- ✅ CORREÇÃO: Tratamento robusto de dados ausentes e infinitos ---
+    # 1. Substituir valores infinitos (resultantes de divisão por zero) por NaN
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
     
-    # Remover apenas linhas onde o target é NaN (últimas linhas)
-    df = df.dropna(subset=['target_future_return', 'target_direction'])
+    # 2. Remover TODAS as linhas que contenham QUALQUER valor NaN.
+    #    Isso garante que o modelo receba apenas dados completos, eliminando
+    #    NaNs do início (janelas móveis) e do fim (alvo futuro).
+    df.dropna(inplace=True)
     
     return df
 
@@ -135,7 +134,6 @@ def ensemble_predict(models, X):
         pred = model.predict(X)
         predictions.append(pred)
     
-    # Média ponderada (pesos baseados na performance)
     return np.mean(predictions, axis=0)
 
 # --- Lógica Principal da Barra Lateral e Coleta de Dados ---
@@ -146,7 +144,6 @@ ticker_symbol = tickers_df[tickers_df['display'] == selected_display]['ticker'].
 company_name = tickers_df[tickers_df['display'] == selected_display]['nome'].iloc[0]
 ticker = f"{ticker_symbol}.SA"
 
-# Ajustar data inicial padrão para garantir dados suficientes
 start_date = st.sidebar.date_input("Data de Início", date(2019, 1, 1), format="DD/MM/YYYY")
 end_date = st.sidebar.date_input("Data de Fim", date.today(), format="DD/MM/YYYY")
 
@@ -235,12 +232,12 @@ else:
                 advanced_data = prepare_advanced_features(data, lookback_days=60, forecast_days=5)
                 
                 # Verificar se temos dados suficientes após o processamento
-                if len(advanced_data) < 50:  # Reduzir o mínimo necessário
+                if len(advanced_data) < 50:
                     st.warning(f"⚠️ Dados insuficientes para análise avançada. Necessários pelo menos 50 dias úteis após processamento. Disponíveis: {len(advanced_data)} dias.")
                     st.info(f"💡 Dica: Selecione um período mais longo (a partir de 2019) para ter dados suficientes.")
                 else:
                     # Separar features e target
-                    feature_columns = [col for col in advanced_data.columns if col.startswith(('return_', 'volume_ma_', 'high_', 'low_', 'volatility_', 'price_vs_', 'ma_cross'))]
+                    feature_columns = [col for col in advanced_data.columns if not col.startswith('target_')]
                     X = advanced_data[feature_columns]
                     y_return = advanced_data['target_future_return']  # Retorno percentual
                     y_direction = advanced_data['target_direction']    # Direção
@@ -377,7 +374,7 @@ else:
                     ))
                     
                     # Intervalo de confiança (simulado)
-                    confidence = abs(ensemble_future) * 0.5  # 50% de margem de erro baseada na volatilidade
+                    confidence = abs(ensemble_future) * 0.5
                     upper_bound = [current_price * (1 + ensemble_future * (i/5) + confidence * (i/5)) for i in range(1, 6)]
                     lower_bound = [current_price * (1 + ensemble_future * (i/5) - confidence * (i/5)) for i in range(1, 6)]
                     
@@ -404,7 +401,7 @@ else:
                     
                     # Calcular métricas de confiança
                     model_agreement = np.std(list(future_predictions.values()))
-                    confidence_score = max(0, 1 - model_agreement * 5)  # Ajustar multiplicador
+                    confidence_score = max(0, 1 - model_agreement * 5)
                     
                     col1, col2, col3 = st.columns(3)
                     col1.metric("Concordância entre Modelos", f"{(1 - model_agreement) * 100:.1f}%")
@@ -424,8 +421,7 @@ else:
                     
                     # Disclaimer importante
                     st.warning("""
-                    **⚠️ Disclaimer Importante:** 
-                    - Previsões baseadas em machine learning são probabilísticas, não garantias
+                    **⚠️ Disclaimer Importante:** - Previsões baseadas em machine learning são probabilísticas, não garantias
                     - Mercado financeiro é influenciado por fatores imprevisíveis
                     - Use como ferramenta auxiliar, não como única base de decisão
                     - Consulte sempre um advisor financeiro para investimentos
@@ -447,31 +443,31 @@ else:
                     df_model[f'vol_lag_{i}'] = df_model['Volatility'].shift(i)
                 df_model.dropna(inplace=True)
 
-                X = df_model.drop('Volatility', axis=1)
-                y = df_model['Volatility']
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+                X_vol = df_model.drop('Volatility', axis=1)
+                y_vol = df_model['Volatility']
+                X_train_vol, X_test_vol, y_train_vol, y_test_vol = train_test_split(X_vol, y_vol, test_size=0.2, shuffle=False)
 
-                with st.spinner('Treinando o modelo...'):
-                    model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
-                    model.fit(X_train, y_train)
+                with st.spinner('Treinando o modelo de volatilidade...'):
+                    model_vol = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+                    model_vol.fit(X_train_vol, y_train_vol)
                 
                 # --- Avaliação do Modelo ---
-                st.subheader("Avaliando a Performance do Modelo")
-                y_pred = model.predict(X_test)
-                mae = mean_absolute_error(y_test, y_pred)
+                st.subheader("Avaliando a Performance do Modelo de Volatilidade")
+                y_pred_vol = model_vol.predict(X_test_vol)
+                mae_vol = mean_absolute_error(y_test_vol, y_pred_vol)
 
-                col1, col2 = st.columns(2)
-                col1.metric("Erro Médio Absoluto (MAE)", f"{mae:.4f}", help="Indica o erro médio das previsões do modelo no período de teste.")
+                col1_vol, _ = st.columns(2)
+                col1_vol.metric("Erro Médio Absoluto (MAE)", f"{mae_vol:.4f}", help="Indica o erro médio das previsões do modelo no período de teste.")
                 
-                fig_eval = go.Figure()
-                fig_eval.add_trace(go.Scatter(x=y_test.index, y=y_test, name='Volatilidade Real', line=dict(color='blue')))
-                fig_eval.add_trace(go.Scatter(x=y_test.index, y=y_pred, name='Previsão do Modelo', line=dict(color='red', dash='dash')))
-                fig_eval.update_layout(title="Comparativo: Volatilidade Real vs. Previsão do Modelo (Dados de Teste)")
-                st.plotly_chart(fig_eval, use_container_width=True)
+                fig_eval_vol = go.Figure()
+                fig_eval_vol.add_trace(go.Scatter(x=y_test_vol.index, y=y_test_vol, name='Volatilidade Real', line=dict(color='blue')))
+                fig_eval_vol.add_trace(go.Scatter(x=y_test_vol.index, y=y_pred_vol, name='Previsão do Modelo', line=dict(color='red', dash='dash')))
+                fig_eval_vol.update_layout(title="Comparativo: Volatilidade Real vs. Previsão do Modelo (Dados de Teste)")
+                st.plotly_chart(fig_eval_vol, use_container_width=True)
 
                 # --- Previsão Final ---
-                st.subheader("Previsão para o Próximo Dia Útil")
-                prediction = model.predict(X.iloc[-1:].values)
+                st.subheader("Previsão de Volatilidade para o Próximo Dia Útil")
+                prediction_vol = model_vol.predict(X_vol.iloc[-1:].values)
                 
                 # Lógica de Data
                 last_date = data.index[-1]
@@ -482,16 +478,16 @@ else:
                     next_day += pd.Timedelta(days=1)
                 next_day_str = next_day.strftime('%d/%m/%Y')
 
-                predicted_vol = prediction[0]
+                predicted_vol = prediction_vol[0]
                 
-                # Lógica de classificação de volatilidade com valores fixos
-                if predicted_vol < 0.30:  # Abaixo de 30% = Baixa
+                # Lógica de classificação de volatilidade
+                if predicted_vol < 0.30:
                     status_text = "Baixa Volatilidade"
                     status_color = "#28a745"  # Verde
-                elif predicted_vol >= 0.60: # Acima de 60% = Alta
+                elif predicted_vol >= 0.60:
                     status_text = "Alta Volatilidade"
                     status_color = "#dc3545"  # Vermelho
-                else: # Entre 30% e 60% = Média
+                else:
                     status_text = "Média Volatilidade"
                     status_color = "#ffc107"  # Amarelo
                 
@@ -512,6 +508,7 @@ else:
 
     # --- Rodapé de Autoria ---
     st.markdown("---")
+    st.markdown("<p style='text-align: center; color: #888;'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888;'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)
 
 

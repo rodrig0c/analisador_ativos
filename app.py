@@ -1,4 +1,4 @@
-# --- Importações ---
+# --- Importações e configuração ---
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -18,13 +18,12 @@ import zipfile
 import json
 
 warnings.filterwarnings('ignore')
-
-# --- Configuração da página ---
 st.set_page_config(page_title="Analisador de Ativos", layout="wide")
-st.title('📊 Analisador Interativo de Ativos Financeiros')
-st.write('Análise de preços e previsões. Use com cuidado.')
 
-# --- Sidebar ---
+# --- Parâmetros de UI ---
+st.title('📊 Analisador Interativo de Ativos Financeiros')
+st.write('Análise de preços e previsões. Use como apoio. Todas as datas no formato dd/mm/YYYY.')
+
 st.sidebar.header('⚙️ Parâmetros')
 start_default = date(2019, 1, 1)
 start_date = st.sidebar.date_input("Data de Início", start_default, format="DD/MM/YYYY")
@@ -33,7 +32,7 @@ view_period = st.sidebar.selectbox("Período de visualização", ["Últimos 3 me
 view_map = {"Últimos 3 meses": 63, "Últimos 6 meses": 126, "Último 1 ano": 252, "Todo período": None}
 viz_days = view_map[view_period]
 
-# --- Funções utilitárias ---
+# --- Helpers / modelos / thresholds ---
 @st.cache_data
 def get_tickers_from_csv():
     try:
@@ -114,20 +113,19 @@ def ensemble_predict(models, X):
     preds = [m.predict(X) for m in models.values()]
     return np.mean(preds, axis=0)
 
-# Styles and thresholds
-MAX_REASONABLE_STD = 0.20  # used to normalize std to agreement
+# Thresholds and label helpers
+MAX_REASONABLE_STD = 0.20
 CONF_HIGH = 0.7
 CONF_MED = 0.4
 VOL_HIGH = 0.5
 VOL_MED = 0.25
 
 def confidence_label_and_color(score):
-    # score in [0,1]
     if score >= CONF_HIGH:
-        return "ALTA CONFIANÇA", "#2ECC71"  # green
+        return "ALTA CONFIANÇA", "#2ECC71"
     if score >= CONF_MED:
-        return "MÉDIA CONFIANÇA", "#F1C40F"  # yellow
-    return "BAIXA CONFIANÇA", "#E74C3C"      # red
+        return "MÉDIA CONFIANÇA", "#F1C40F"
+    return "BAIXA CONFIANÇA", "#E74C3C"
 
 def volatility_label_and_color(v):
     if v >= VOL_HIGH:
@@ -136,7 +134,21 @@ def volatility_label_and_color(v):
         return "VOLATILIDADE MÉDIA", "#F1C40F"
     return "BAIXA VOLATILIDADE", "#2ECC71"
 
-# --- Carregar tickers e dados ---
+# Feature explanations (short)
+FEATURE_DOC = {
+    'return_Xd': "Retorno percentual sobre X dias (close_t / close_t-X - 1).",
+    'high_Xd': "Máxima observada nos últimos X dias.",
+    'low_Xd': "Mínima observada nos últimos X dias.",
+    'volatility_Xd': "Desvio padrão dos retornos na janela X.",
+    'volume_ma_Xd': "Média móvel de volume em X dias.",
+    'price_vs_ma20': "Preço atual dividido pela MA20 (relação preço/media20).",
+    'price_vs_ma50': "Preço atual dividido pela MA50.",
+    'ma_cross': "Indicador binário (1 se MA20 > MA50).",
+    'RSI': "Índice de Força Relativa (momentum).",
+    'Volatility': "Volatilidade anualizada (janela 30 dias)."
+}
+
+# --- Load tickers and data ---
 tickers_df = get_tickers_from_csv()
 selected_display = st.sidebar.selectbox('Escolha a Ação', tickers_df['display'])
 ticker_symbol = tickers_df[tickers_df['display'] == selected_display]['ticker'].iloc[0]
@@ -154,11 +166,9 @@ else:
 
 data = load_data(ticker, start_date, end_date)
 ibov = load_data('^BVSP', start_date, end_date)
-
 if 'advanced_result' not in st.session_state: st.session_state['advanced_result'] = None
 if 'vol_result' not in st.session_state: st.session_state['vol_result'] = None
 
-# Validation
 if data.empty or len(data) < 60:
     st.error("❌ Dados insuficientes ou ausentes (mínimo 60 dias). Ajuste as datas ou o ticker.")
     st.stop()
@@ -178,7 +188,7 @@ c3.metric("💰 Último Preço", f"R$ {last_price:.2f}")
 c4.metric("📊 Variação (Dia)", f"{price_change:+.2f} R$", f"{percent_change:+.2f}%")
 st.markdown("---")
 
-# --- Initial charts (kept as separate tabs) ---
+# --- Charts as before (kept) ---
 tab1, tab2, tab3 = st.tabs(["Preço e Indicadores", "Volatilidade", "Comparativo com IBOVESPA"])
 if viz_days is None:
     view_slice = slice(None)
@@ -194,7 +204,6 @@ with tab1:
     fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['BB_Superior'][view_slice], name='BB Sup', fill=None))
     fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['BB_Inferior'][view_slice], name='BB Inf', fill='tonexty', opacity=0.1))
     st.plotly_chart(fig, use_container_width=True)
-
     st.subheader('RSI')
     fig_rsi = px.line(data[view_slice], x=data[view_slice].index, y='RSI', title='RSI')
     fig_rsi.add_hline(y=70, line_dash="dash", annotation_text="Sobrecompra")
@@ -208,7 +217,6 @@ with tab2:
     st.plotly_chart(fig_vol, use_container_width=True)
     current_vol = float(data['Volatility'].iloc[-1]) if not pd.isna(data['Volatility'].iloc[-1]) else 0.0
     vol_label, vol_color = volatility_label_and_color(current_vol)
-    # colored text (foreground) on dark background
     st.markdown(f"<div style='background:#0b1220;padding:8px;border-radius:6px'><span style='color:{vol_color};font-size:18px;font-weight:700'>{vol_label}</span>  <span style='color:#ddd;margin-left:12px;font-size:16px'>Volatilidade atual: <strong>{current_vol:.4f}</strong></span></div>", unsafe_allow_html=True)
 
 with tab3:
@@ -229,9 +237,9 @@ with tab3:
 
 st.markdown("---")
 
-# --- Seção: Volatilidade (ML simples) - independent below charts ---
+# --- Volatilidade (simples) section (independent) ---
 st.subheader('🧠 Volatilidade — Modelo Simples (RandomForest)')
-st.write("Modelo simples para prever volatilidade do próximo dia útil. Executar não altera a seção avançada.")
+st.write("Modelo simples para prever volatilidade do próximo dia útil.")
 if st.button('Executar Previsão de Volatilidade (Simples)', key='run_vol_simple'):
     df_vol = data[['Volatility']].copy().dropna()
     if len(df_vol) < 30:
@@ -246,10 +254,9 @@ if st.button('Executar Previsão de Volatilidade (Simples)', key='run_vol_simple
         model_vol.fit(Xv, yv)
         pred_vol = float(model_vol.predict(Xv.iloc[-1:].values)[0])
         last_date = pd.to_datetime(data.index[-1])
-        next_day = (last_date + BDay(1))
-        next_day_str = next_day.strftime('%d/%m/%Y')
-        st.session_state['vol_result'] = {'timestamp': pd.Timestamp.now().isoformat(), 'ticker': ticker_symbol, 'pred_vol': pred_vol, 'date': next_day_str}
-# Show simple result (foreground color, dark background, larger font)
+        next_day = (last_date + BDay(1)).strftime('%d/%m/%Y')
+        st.session_state['vol_result'] = {'timestamp': pd.Timestamp.now().isoformat(), 'ticker': ticker_symbol, 'pred_vol': pred_vol, 'date': next_day}
+
 if st.session_state.get('vol_result') is not None:
     vol = st.session_state['vol_result']
     v = vol['pred_vol']
@@ -260,7 +267,6 @@ if st.session_state.get('vol_result') is not None:
         f"<div style='color:#ddd;font-size:18px'>Data prevista: <strong>{vol['date']}</strong></div>"
         f"<div style='color:#ddd;font-size:18px'>Valor previsto: <strong>{v:.4f}</strong></div>"
         f"</div>", unsafe_allow_html=True)
-    # export button (only button)
     mem = io.BytesIO()
     with zipfile.ZipFile(mem, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr('volatility.json', json.dumps(vol))
@@ -270,22 +276,55 @@ if st.session_state.get('vol_result') is not None:
 
 st.markdown("---")
 
-# --- Seção: Previsão Avançada (ML avançado) em bloco próprio ---
+# --- Advanced prediction section (separate block) ---
 st.subheader('🔮 Previsão de Preço Avançada (Machine Learning)')
-st.write("Clique em Executar para treinar modelos com dados reais do Yahoo Finance e gerar previsões para os próximos 5 dias úteis.")
-# Button runs training. We include progress bar and status text.
+st.write("Clique em Executar. Usa apenas dados reais do Yahoo Finance no período selecionado. Resultado não sobrescreve a seção simples.")
+
 if st.button('Executar Previsão de Preço Avançada', key='run_advanced'):
+    # prepare features and explain immediately
     adv_df, used_features = prepare_advanced_features(data, forecast_days=5)
-    # show data summary header immediately (before training)
+
+    # Clarify what 'linhas válidas' means and explain features succinctly
+    linhas_validas = len(adv_df)
+    total_historico = len(data)
+    feature_list = used_features.copy()
+    # build small human readable feature explanation list
+    explanations = []
+    for f in feature_list:
+        if f.startswith('return_'):
+            explanations.append(f"{f}: Retorno percentual (ex.: retorno em N dias).")
+        elif f.startswith('high_'):
+            explanations.append(f"{f}: Máxima em janela.")
+        elif f.startswith('low_'):
+            explanations.append(f"{f}: Mínima em janela.")
+        elif f.startswith('volatility_'):
+            explanations.append(f"{f}: Volatilidade (desvio) em janela.")
+        elif f.startswith('volume_ma_'):
+            explanations.append(f"{f}: Média móvel de volume.")
+        elif f in ('price_vs_ma20','price_vs_ma50'):
+            explanations.append(f"{f}: Relação preço/MA.")
+        elif f == 'ma_cross':
+            explanations.append(f"{f}: 1 se MA20 > MA50, senão 0.")
+        elif f == 'RSI':
+            explanations.append(f"{f}: Índice de Força Relativa.")
+        elif f == 'Volatility':
+            explanations.append(f"{f}: Volatilidade anualizada (janela 30 dias).")
+        else:
+            explanations.append(f"{f}: feature técnica.")
+
     st.markdown(
-        f"<div style='background:#0b1220;padding:10px;border-radius:8px'><span style='color:#fff;font-size:16px;font-weight:700'>Dados usados:</span> "
-        f"<span style='color:#ddd;margin-left:8px;font-size:15px'>Período: {pd.to_datetime(start_date).strftime('%d/%m/%Y')} — {pd.to_datetime(end_date).strftime('%d/%m/%Y')} | Linhas válidas após limpeza: {len(adv_df)} | Features: {len(used_features)}</span></div>",
-        unsafe_allow_html=True
+        f"<div style='background:#0b1220;padding:10px;border-radius:8px'>"
+        f"<span style='color:#fff;font-weight:700'>Período solicitado:</span> <span style='color:#ddd;margin-left:8px'>{pd.to_datetime(start_date).strftime('%d/%m/%Y')} — {pd.to_datetime(end_date).strftime('%d/%m/%Y')}</span><br>"
+        f"<span style='color:#fff;font-weight:700'>Dias no histórico carregado:</span> <span style='color:#ddd;margin-left:8px'>{total_historico}</span><br>"
+        f"<span style='color:#fff;font-weight:700'>Linhas válidas após limpeza:</span> <span style='color:#ddd;margin-left:8px'>{linhas_validas} (dias úteis com todas as features e target disponíveis)</span><br>"
+        f"<span style='color:#fff;font-weight:700'>Features usadas (principais):</span> <span style='color:#ddd;margin-left:8px'>{', '.join(feature_list[:10])}{'...' if len(feature_list)>10 else ''}</span>"
+        f"</div>", unsafe_allow_html=True
     )
 
-    if len(adv_df) < 60:
-        st.warning(f"Dados insuficientes para análise avançada. Disponíveis: {len(adv_df)} dias válidos após limpeza.")
+    if linhas_validas < 60:
+        st.warning(f"Dados insuficientes para análise avançada. Linhas válidas: {linhas_validas}. Aumente o intervalo.")
     else:
+        # training with progress
         X = adv_df[used_features].copy()
         y_return = adv_df['target_future_return'].copy()
         y_dir = adv_df['target_direction'].copy()
@@ -296,34 +335,44 @@ if st.button('Executar Previsão de Preço Avançada', key='run_advanced'):
         scaler = StandardScaler()
         X_train_s = scaler.fit_transform(X_train)
         X_test_s = scaler.transform(X_test)
+
         models = create_advanced_model()
         trained = {}
-        preds = {}
+        preds_test = {}
+        n_models = len(models)
         progress = st.progress(0)
         status = st.empty()
-        n_models = len(models)
         for i,(name,model) in enumerate(models.items()):
             status.text(f"Treinando {name} ({i+1}/{n_models})...")
-            # Fit with try/except to avoid silent failures
             try:
                 model.fit(X_train_s, y_train)
                 trained[name] = model
-                preds[name] = model.predict(X_test_s)
+                preds_test[name] = model.predict(X_test_s)
             except Exception as e:
                 status.text(f"Erro ao treinar {name}: {e}")
                 trained[name] = None
-                preds[name] = np.full(shape=(len(X_test_s),), fill_value=np.nan)
+                preds_test[name] = np.full(shape=(len(X_test_s),), fill_value=np.nan)
             progress.progress(int(((i+1)/n_models)*100))
         status.text("Treinamento concluído!")
-        # Ensure numeric floats
+
+        # per-model future predictions using LAST AVAILABLE REAL FEATURES
+        # IMPORTANT: use the last **real** date from 'data' as base for future dates
+        current_price = float(data['Close'].iloc[-1])
+        current_date = pd.to_datetime(data.index[-1])  # last real date
+        # Use last row of X (features aligned to historical last sample)
+        last_feat = X.iloc[-1:].copy()
+        try:
+            last_scaled = scaler.transform(last_feat)
+        except Exception:
+            last_scaled = scaler.transform(X.tail(1).fillna(0))
+
         per_model_future = {}
         for name, model in trained.items():
             try:
-                per_model_future[name] = float(model.predict(scaler.transform(X.iloc[-1:].values))[0]) if model is not None else float('nan')
+                per_model_future[name] = float(model.predict(last_scaled)[0]) if model is not None else float('nan')
             except Exception:
                 per_model_future[name] = float('nan')
 
-        # compute ensemble only with valid numeric model predictions
         valid_vals = np.array([v for v in per_model_future.values() if not (pd.isna(v) or np.isinf(v))], dtype=float)
         if valid_vals.size == 0:
             ensemble_future = 0.0
@@ -332,79 +381,123 @@ if st.button('Executar Previsão de Preço Avançada', key='run_advanced'):
             ensemble_future = float(np.mean(valid_vals))
             std_preds = float(np.std(valid_vals))
 
-        # safe capping
         capped = float(np.clip(ensemble_future, -0.5, 0.5))
         daily_rate = (1 + capped)**(1/5) - 1
-        cur_price = float(adv_df['Close'].iloc[-1])
-        temp = cur_price
-        preds_list = []
-        for d in range(1,6):
-            temp *= (1+daily_rate)
-            fut_date = (pd.to_datetime(adv_df.index[-1]) + BDay(d)).normalize()
-            preds_list.append({'Dias':d,'Data':fut_date.strftime('%d/%m/%Y'),'Preço Previsto':temp,'Variação':(temp/cur_price - 1),'Ticker':ticker_symbol})
-        preds_df = pd.DataFrame(preds_list)
 
-        # compute agreement and confidence robustly
+        # Build future dates starting from current_date + BDay(1..5) => ensures we predict FUTURE, not past
+        temp_price = current_price
+        predicted_prices_data = []
+        for i_day in range(1,6):
+            temp_price *= (1 + daily_rate)
+            fut_date = (current_date + BDay(i_day)).normalize()
+            predicted_prices_data.append({
+                'Dias': i_day,
+                'Data': fut_date.strftime('%d/%m/%Y'),
+                'Preço Previsto': temp_price,
+                'Variação': (temp_price / current_price - 1),
+                'Ticker': ticker_symbol
+            })
+        predictions_df = pd.DataFrame(predicted_prices_data)
+
+        # Confidence computation (robust)
         agreement = max(0.0, 1.0 - min(std_preds, MAX_REASONABLE_STD) / MAX_REASONABLE_STD)
         magnitude_penalty = max(0.0, 1.0 - (abs(ensemble_future) / 0.5))
         confidence = agreement * magnitude_penalty
-        # Clip in [0,1]
         confidence = float(np.clip(confidence, 0.0, 1.0))
         concordance_pct = agreement * 100.0
         confidence_pct = confidence * 100.0
         rec_label, rec_color = confidence_label_and_color(confidence)
 
-        # store results in session (with clear numeric types and brazilian date format)
+        # Store results (with clear fields and display-ready date format)
         st.session_state['advanced_result'] = {
             'timestamp': pd.Timestamp.now().isoformat(),
             'ticker': ticker_symbol,
-            'used_features': used_features,
-            'metrics': None,  # metrics can be added if desired (training/test metrics)
+            'data_used_period': f"{pd.to_datetime(start_date).strftime('%d/%m/%Y')} — {pd.to_datetime(end_date).strftime('%d/%m/%Y')}",
+            'rows_historico': int(total_historico),
+            'rows_validas': int(linhas_validas),
+            'features_used': used_features,
             'per_model_return_predictions': {k: (None if pd.isna(v) else float(v)) for k,v in per_model_future.items()},
             'ensemble_future_return': float(ensemble_future),
-            'predictions_df': preds_df.to_dict(orient='records'),
-            'scaler_mean': getattr(scaler, 'mean_', None).tolist() if hasattr(scaler, 'mean_') else None,
-            'scaler_scale': getattr(scaler, 'scale_', None).tolist() if hasattr(scaler, 'scale_') else None,
+            'predictions_df': predictions_df.to_dict(orient='records'),
             'confidence': float(confidence),
             'concordance_pct': float(concordance_pct),
             'confidence_pct': float(confidence_pct),
             'rec_label': rec_label,
-            'rec_color': rec_color,
-            'data_used_period': f"{pd.to_datetime(start_date).strftime('%d/%m/%Y')} — {pd.to_datetime(end_date).strftime('%d/%m/%Y')}",
-            'rows_used': int(len(adv_df)),
-            'features_used': used_features
+            'rec_color': rec_color
         }
 
-# Display advanced result if exists (won't be cleared by running simple)
+# --- Display advanced results (won't be cleared by running simple) ---
 if st.session_state.get('advanced_result') is not None:
     adv = st.session_state['advanced_result']
     st.subheader("Resultados - Previsão Avançada")
-    # header with data used and period
+    # Header: explicit data used and meaning of 'linhas válidas'
     st.markdown(
         f"<div style='background:#0b1220;padding:10px;border-radius:8px'>"
-        f"<span style='color:#fff;font-size:15px;font-weight:700'>Dados usados:</span> "
-        f"<span style='color:#ddd;margin-left:8px;font-size:14px'>Período: {adv['data_used_period']} | Linhas válidas: {adv['rows_used']} | Features: {len(adv['features_used'])}</span>"
-        f"</div>", unsafe_allow_html=True)
-    # concordance, confidence, recommendation as colored text (foreground) aligned
+        f"<span style='color:#fff;font-weight:700'>Período usado:</span> <span style='color:#ddd;margin-left:8px'>{adv['data_used_period']}</span><br>"
+        f"<span style='color:#fff;font-weight:700'>Tamanho do histórico carregado:</span> <span style='color:#ddd;margin-left:8px'>{adv['rows_historico']} linhas (dias)</span><br>"
+        f"<span style='color:#fff;font-weight:700'>Linhas válidas após limpeza:</span> <span style='color:#ddd;margin-left:8px'>{adv['rows_validas']} (dias úteis com todas as features e target disponíveis)</span><br>"
+        f"<span style='color:#fff;font-weight:700'>Features utilizadas (exemplos):</span> <span style='color:#ddd;margin-left:8px'>{', '.join(adv['features_used'][:12])}{'...' if len(adv['features_used'])>12 else ''}</span>"
+        f"</div>", unsafe_allow_html=True
+    )
+
+    # Provide short feature definitions (collapsible)
+    with st.expander("O que significam 'linhas válidas' e as principais features usadas (clique para abrir)"):
+        st.markdown("<ul>", unsafe_allow_html=True)
+        st.markdown(f"<li><strong>Linhas válidas:</strong> dias úteis do histórico que permaneceram depois que removemos linhas com valores faltantes ou inválidos nas features e no target. Estes são os pontos que o modelo realmente viu.</li>", unsafe_allow_html=True)
+        # show up to 20 feature explanations
+        for f in adv['features_used'][:40]:
+            desc = "feature técnica"
+            if f.startswith('return_'): desc = "retorno percentual em N dias"
+            elif f.startswith('high_'): desc = "máxima na janela N dias"
+            elif f.startswith('low_'): desc = "mínima na janela N dias"
+            elif f.startswith('volatility_'): desc = "volatilidade (desvio) em janela N"
+            elif f.startswith('volume_ma_'): desc = "média móvel de volume em N dias"
+            elif f in ('price_vs_ma20','price_vs_ma50'): desc = "relação preço / média móvel"
+            elif f == 'ma_cross': desc = "1 se MA20 > MA50, senão 0"
+            elif f == 'RSI': desc = "Índice de Força Relativa"
+            elif f == 'Volatility': desc = "Volatilidade anualizada (janela 30 dias)"
+            st.markdown(f"<li><strong>{f}:</strong> {desc}</li>", unsafe_allow_html=True)
+        st.markdown("</ul>", unsafe_allow_html=True)
+
+    # Concordância, Score e Recomendação (texto colorido, dark background)
     concord_pct = adv.get('concordance_pct', 0.0)
     confidence_pct = adv.get('confidence_pct', 0.0)
     rec_label = adv.get('rec_label', 'BAIXA CONFIANÇA')
     rec_color = adv.get('rec_color', '#E74C3C')
     st.markdown(
-        f"<div style='display:flex;gap:18px;align-items:center'>"
-        f"<div style='font-size:18px;color:#ddd'><strong>Concordância:</strong> <span style='color:{rec_color};font-size:20px;font-weight:800'>{concord_pct:.1f}%</span></div>"
-        f"<div style='font-size:18px;color:#ddd'><strong>Score de Confiança:</strong> <span style='color:{rec_color};font-size:20px;font-weight:800'>{confidence_pct:.1f}%</span></div>"
-        f"<div style='font-size:18px;color:#ddd'><strong>Recomendação:</strong> <span style='color:{rec_color};font-size:20px;font-weight:800'>{rec_label}</span></div>"
+        f"<div style='display:flex;gap:20px;align-items:center;margin-top:8px'>"
+        f"<div style='color:#ddd;font-size:16px'><strong>Concordância:</strong> <span style='color:{rec_color};font-size:20px;font-weight:800'>{concord_pct:.1f}%</span></div>"
+        f"<div style='color:#ddd;font-size:16px'><strong>Score de Confiança:</strong> <span style='color:{rec_color};font-size:20px;font-weight:800'>{confidence_pct:.1f}%</span></div>"
+        f"<div style='color:#ddd;font-size:16px'><strong>Recomendação:</strong> <span style='color:{rec_color};font-size:20px;font-weight:800'>{rec_label}</span></div>"
         f"</div>", unsafe_allow_html=True)
-    # show predictions table
-    st.subheader("Previsão para próximos 5 dias")
-    st.dataframe(pd.DataFrame(adv['predictions_df']).style.format({'Preço Previsto':'R$ {:.2f}','Variação':'{:+.2%}'}), use_container_width=True)
-    # per-model predictions
+
+    # Highlighted big card for the 5-day predictions (important)
+    preds_display = pd.DataFrame(adv['predictions_df'])
+    st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='background:#071626;padding:12px;border-radius:10px'>", unsafe_allow_html=True)
+    st.markdown("<div style='color:#fff;font-size:18px;font-weight:700;margin-bottom:8px'>Projeção de Preço para os Próximos 5 Dias (baseado na data mais recente disponível)</div>", unsafe_allow_html=True)
+
+    # big list with larger font
+    for row in preds_display.to_dict(orient='records'):
+        date_str = row['Data']
+        price = float(row['Preço Previsto'])
+        var = float(row['Variação'])
+        st.markdown(
+            f"<div style='display:flex;justify-content:space-between;align-items:center;padding:8px 6px;border-radius:6px;margin-bottom:6px'>"
+            f"<div style='color:#ddd;font-size:16px'>{date_str}</div>"
+            f"<div style='color:#00BFFF;font-size:24px;font-weight:800'>R$ {price:,.2f}</div>"
+            f"<div style='color:#ddd;font-size:16px'>{var:+.2%}</div>"
+            f"</div>", unsafe_allow_html=True
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # small per-model table
     per_model_df = pd.DataFrame([{'Modelo':k,'Retorno Estimado':v} for k,v in adv['per_model_return_predictions'].items()])
     if not per_model_df.empty:
-        st.subheader("Previsões por modelo")
+        st.subheader("Previsões por modelo (retorno estimado para 5 dias)")
         st.dataframe(per_model_df.style.format({'Retorno Estimado':'{:+.4f}'}), use_container_width=True)
-    # export button only (no extra title)
+
+    # Export button (single button; already labeled)
     mem = io.BytesIO()
     with zipfile.ZipFile(mem, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
         preds_df = pd.DataFrame(adv['predictions_df'])
@@ -413,7 +506,8 @@ if st.session_state.get('advanced_result') is not None:
             'timestamp': adv['timestamp'],
             'ticker': adv['ticker'],
             'data_used_period': adv['data_used_period'],
-            'rows_used': adv['rows_used'],
+            'rows_historico': adv['rows_historico'],
+            'rows_validas': adv['rows_validas'],
             'features_used': adv['features_used'],
             'per_model_return_predictions': adv['per_model_return_predictions'],
             'ensemble_future_return': adv['ensemble_future_return'],
@@ -424,7 +518,7 @@ if st.session_state.get('advanced_result') is not None:
 
 st.markdown("---")
 
-# --- Importar e comparar (sempre no final) ---
+# --- Import / Compare final section ---
 st.subheader("📂 Importar e Comparar Previsões Exportadas")
 uploaded = st.file_uploader("Carregar ZIP de análise exportada por esta ferramenta", type=["zip"])
 if uploaded is not None:
@@ -432,6 +526,7 @@ if uploaded is not None:
         z = zipfile.ZipFile(io.BytesIO(uploaded.read()))
         if 'predictions.csv' in z.namelist():
             preds = pd.read_csv(io.BytesIO(z.read('predictions.csv')), dtype=str)
+            # attempt parse dates dayfirst true
             preds['Data'] = pd.to_datetime(preds['Data'], dayfirst=True, errors='coerce')
             preds_display = preds.copy()
             preds_display['Data'] = preds_display['Data'].dt.strftime('%d/%m/%Y')
@@ -465,7 +560,6 @@ if uploaded is not None:
                     st.dataframe(comp.style.format({'Preço Previsto':'R$ {:.2f}','Preço Real (fechamento próximo disponível)':'R$ {:.2f}','Erro Abs':'R$ {:.2f}','Erro %':'{:+.2%}'}), use_container_width=True)
         elif 'volatility.json' in z.namelist():
             vol = json.loads(z.read('volatility.json'))
-            # keep the imported date parsed as dd/mm/yyyy if present
             st.write("Arquivo de Volatilidade importado:")
             st.json(vol)
             if st.button("Comparar Volatilidade importada com valor real (Yahoo)"):
@@ -487,12 +581,11 @@ if uploaded is not None:
     except Exception as e:
         st.error(f"Erro ao processar ZIP: {e}")
 
-# --- Rodapé ---
+# --- Footer ---
 last_update = pd.to_datetime(data.index[-1]).strftime('%d/%m/%Y')
 st.markdown("---")
 st.caption(f"Última atualização dos preços: **{last_update}** — Dados: Yahoo Finance.")
 st.markdown("<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)
-
 
 
 

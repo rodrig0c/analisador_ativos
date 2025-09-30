@@ -229,3 +229,9 @@ else:
     st.markdown("---")
     st.caption(f"📅 Última atualização dos preços: **{last_update_date}** — Dados fornecidos pelo Yahoo Finance (podem ter atraso).")
 
+         # --- NOVO: Rodapé de Autoria ---
+    st.markdown("---")
+    st.markdown("<p style='text-align: center; color: #888;'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)
+
+
+

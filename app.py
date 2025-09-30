@@ -33,7 +33,7 @@ view_period = st.sidebar.selectbox("Período de visualização", ["Últimos 3 me
 view_map = {"Últimos 3 meses": 63, "Últimos 6 meses": 126, "Último 1 ano": 252, "Todo período": None}
 viz_days = view_map[view_period]
 
-# --- Helpers ---
+# --- Funções utilitárias ---
 @st.cache_data
 def get_tickers_from_csv():
     try:
@@ -114,21 +114,27 @@ def ensemble_predict(models, X):
     preds = [m.predict(X) for m in models.values()]
     return np.mean(preds, axis=0)
 
-def confidence_style(score):
-    # score in [0,1]. thresholds: >=0.7 high (green), 0.4-0.7 medium (yellow), <0.4 low (red)
-    if score >= 0.7:
-        return {"color":"#ffffff","bg":"#2ECC71","label":"ALTA CONFIANÇA"}  # green
-    if score >= 0.4:
-        return {"color":"#000000","bg":"#F1C40F","label":"MÉDIA CONFIANÇA"}  # yellow
-    return {"color":"#ffffff","bg":"#E74C3C","label":"BAIXA CONFIANÇA"}      # red
+# Styles and thresholds
+MAX_REASONABLE_STD = 0.20  # used to normalize std to agreement
+CONF_HIGH = 0.7
+CONF_MED = 0.4
+VOL_HIGH = 0.5
+VOL_MED = 0.25
 
-def volatility_style(v):
-    # annualized volatility thresholds: <0.25 low (green), 0.25-0.5 medium (yellow), >=0.5 high (red)
-    if v >= 0.5:
-        return {"color":"#ffffff","bg":"#E74C3C","label":"ALTA VOLATILIDADE"}
-    if v >= 0.25:
-        return {"color":"#000000","bg":"#F1C40F","label":"VOLATILIDADE MÉDIA"}
-    return {"color":"#ffffff","bg":"#2ECC71","label":"BAIXA VOLATILIDADE"}
+def confidence_label_and_color(score):
+    # score in [0,1]
+    if score >= CONF_HIGH:
+        return "ALTA CONFIANÇA", "#2ECC71"  # green
+    if score >= CONF_MED:
+        return "MÉDIA CONFIANÇA", "#F1C40F"  # yellow
+    return "BAIXA CONFIANÇA", "#E74C3C"      # red
+
+def volatility_label_and_color(v):
+    if v >= VOL_HIGH:
+        return "ALTA VOLATILIDADE", "#E74C3C"
+    if v >= VOL_MED:
+        return "VOLATILIDADE MÉDIA", "#F1C40F"
+    return "BAIXA VOLATILIDADE", "#2ECC71"
 
 # --- Carregar tickers e dados ---
 tickers_df = get_tickers_from_csv()
@@ -137,19 +143,29 @@ ticker_symbol = tickers_df[tickers_df['display'] == selected_display]['ticker'].
 company_name = tickers_df[tickers_df['display'] == selected_display]['nome'].iloc[0]
 ticker = f"{ticker_symbol}.SA"
 
+# Clear analyses when ticker changes
+if 'last_ticker' not in st.session_state:
+    st.session_state['last_ticker'] = ticker_symbol
+else:
+    if st.session_state['last_ticker'] != ticker_symbol:
+        st.session_state['last_ticker'] = ticker_symbol
+        st.session_state['advanced_result'] = None
+        st.session_state['vol_result'] = None
+
 data = load_data(ticker, start_date, end_date)
 ibov = load_data('^BVSP', start_date, end_date)
 
 if 'advanced_result' not in st.session_state: st.session_state['advanced_result'] = None
 if 'vol_result' not in st.session_state: st.session_state['vol_result'] = None
 
+# Validation
 if data.empty or len(data) < 60:
     st.error("❌ Dados insuficientes ou ausentes (mínimo 60 dias). Ajuste as datas ou o ticker.")
     st.stop()
 
 data = calculate_indicators(data)
 
-# --- Cabeçalho e métricas ---
+# --- Header metrics ---
 st.subheader('📈 Visão Geral do Ativo')
 last_price = float(data['Close'].iloc[-1])
 prev_price = float(data['Close'].iloc[-2]) if len(data) >= 2 else last_price
@@ -162,7 +178,7 @@ c3.metric("💰 Último Preço", f"R$ {last_price:.2f}")
 c4.metric("📊 Variação (Dia)", f"{price_change:+.2f} R$", f"{percent_change:+.2f}%")
 st.markdown("---")
 
-# --- Gráficos iniciais: mesma estrutura de antes ---
+# --- Initial charts (kept as separate tabs) ---
 tab1, tab2, tab3 = st.tabs(["Preço e Indicadores", "Volatilidade", "Comparativo com IBOVESPA"])
 if viz_days is None:
     view_slice = slice(None)
@@ -178,6 +194,7 @@ with tab1:
     fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['BB_Superior'][view_slice], name='BB Sup', fill=None))
     fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['BB_Inferior'][view_slice], name='BB Inf', fill='tonexty', opacity=0.1))
     st.plotly_chart(fig, use_container_width=True)
+
     st.subheader('RSI')
     fig_rsi = px.line(data[view_slice], x=data[view_slice].index, y='RSI', title='RSI')
     fig_rsi.add_hline(y=70, line_dash="dash", annotation_text="Sobrecompra")
@@ -190,8 +207,9 @@ with tab2:
     fig_vol = px.line(data[view_slice], x=data[view_slice].index, y='Volatility', title='Volatilidade Anualizada')
     st.plotly_chart(fig_vol, use_container_width=True)
     current_vol = float(data['Volatility'].iloc[-1]) if not pd.isna(data['Volatility'].iloc[-1]) else 0.0
-    vol_style = volatility_style(current_vol)
-    st.markdown(f"<div style='font-size:18px;padding:10px;border-radius:6px;background:{vol_style['bg']};color:{vol_style['color']};text-align:center'><strong>{vol_style['label']}</strong> — Volatilidade atual: {current_vol:.4f}</div>", unsafe_allow_html=True)
+    vol_label, vol_color = volatility_label_and_color(current_vol)
+    # colored text (foreground) on dark background
+    st.markdown(f"<div style='background:#0b1220;padding:8px;border-radius:6px'><span style='color:{vol_color};font-size:18px;font-weight:700'>{vol_label}</span>  <span style='color:#ddd;margin-left:12px;font-size:16px'>Volatilidade atual: <strong>{current_vol:.4f}</strong></span></div>", unsafe_allow_html=True)
 
 with tab3:
     st.subheader('Comparativo com IBOVESPA')
@@ -211,7 +229,7 @@ with tab3:
 
 st.markdown("---")
 
-# --- Seção: Volatilidade (ML simples) independente abaixo dos gráficos ---
+# --- Seção: Volatilidade (ML simples) - independent below charts ---
 st.subheader('🧠 Volatilidade — Modelo Simples (RandomForest)')
 st.write("Modelo simples para prever volatilidade do próximo dia útil. Executar não altera a seção avançada.")
 if st.button('Executar Previsão de Volatilidade (Simples)', key='run_vol_simple'):
@@ -231,13 +249,18 @@ if st.button('Executar Previsão de Volatilidade (Simples)', key='run_vol_simple
         next_day = (last_date + BDay(1))
         next_day_str = next_day.strftime('%d/%m/%Y')
         st.session_state['vol_result'] = {'timestamp': pd.Timestamp.now().isoformat(), 'ticker': ticker_symbol, 'pred_vol': pred_vol, 'date': next_day_str}
-# Mostrar resultado simples se existir (não apagará o avançado)
+# Show simple result (foreground color, dark background, larger font)
 if st.session_state.get('vol_result') is not None:
     vol = st.session_state['vol_result']
     v = vol['pred_vol']
-    style = volatility_style(v)
-    st.markdown(f"<div style='display:flex;gap:12px;align-items:center'><div style='padding:12px;border-radius:8px;background:{style['bg']};color:{style['color']};font-size:20px;font-weight:700;text-align:center;min-width:260px'>{style['label']}</div><div style='font-size:18px'>Data prevista: <strong>{vol['date']}</strong></div><div style='font-size:18px'>Valor previsto: <strong> {v:.4f}</strong></div></div>", unsafe_allow_html=True)
-    # export button (only the button)
+    vol_label, vol_color = volatility_label_and_color(v)
+    st.markdown(
+        f"<div style='background:#0b1220;padding:10px;border-radius:8px;display:flex;gap:16px;align-items:center'>"
+        f"<div style='font-size:20px;color:{vol_color};font-weight:800'>{vol_label}</div>"
+        f"<div style='color:#ddd;font-size:18px'>Data prevista: <strong>{vol['date']}</strong></div>"
+        f"<div style='color:#ddd;font-size:18px'>Valor previsto: <strong>{v:.4f}</strong></div>"
+        f"</div>", unsafe_allow_html=True)
+    # export button (only button)
     mem = io.BytesIO()
     with zipfile.ZipFile(mem, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr('volatility.json', json.dumps(vol))
@@ -247,13 +270,21 @@ if st.session_state.get('vol_result') is not None:
 
 st.markdown("---")
 
-# --- Seção: Previsão Avançada em bloco próprio ---
+# --- Seção: Previsão Avançada (ML avançado) em bloco próprio ---
 st.subheader('🔮 Previsão de Preço Avançada (Machine Learning)')
 st.write("Clique em Executar para treinar modelos com dados reais do Yahoo Finance e gerar previsões para os próximos 5 dias úteis.")
+# Button runs training. We include progress bar and status text.
 if st.button('Executar Previsão de Preço Avançada', key='run_advanced'):
     adv_df, used_features = prepare_advanced_features(data, forecast_days=5)
+    # show data summary header immediately (before training)
+    st.markdown(
+        f"<div style='background:#0b1220;padding:10px;border-radius:8px'><span style='color:#fff;font-size:16px;font-weight:700'>Dados usados:</span> "
+        f"<span style='color:#ddd;margin-left:8px;font-size:15px'>Período: {pd.to_datetime(start_date).strftime('%d/%m/%Y')} — {pd.to_datetime(end_date).strftime('%d/%m/%Y')} | Linhas válidas após limpeza: {len(adv_df)} | Features: {len(used_features)}</span></div>",
+        unsafe_allow_html=True
+    )
+
     if len(adv_df) < 60:
-        st.warning(f"Dados insuficientes para análise avançada. Disponíveis: {len(adv_df)} dias.")
+        st.warning(f"Dados insuficientes para análise avançada. Disponíveis: {len(adv_df)} dias válidos após limpeza.")
     else:
         X = adv_df[used_features].copy()
         y_return = adv_df['target_future_return'].copy()
@@ -268,103 +299,132 @@ if st.button('Executar Previsão de Preço Avançada', key='run_advanced'):
         models = create_advanced_model()
         trained = {}
         preds = {}
-        for name, model in models.items():
-            model.fit(X_train_s, y_train)
-            trained[name] = model
-            preds[name] = model.predict(X_test_s)
-        ensemble_pred = ensemble_predict(trained, X_test_s)
-        metrics = []
-        for name in models.keys():
-            mae = mean_absolute_error(y_test, preds[name])
-            rmse = np.sqrt(mean_squared_error(y_test, preds[name]))
-            r2 = r2_score(y_test, preds[name])
-            acc_dir = accuracy_score(ydir_test, (preds[name] > 0).astype(int))
-            metrics.append({'Modelo':name,'MAE':mae,'RMSE':rmse,'R²':r2,'Acerto Direção':acc_dir})
-        metrics_df = pd.DataFrame(metrics)
-        last_feat = X.iloc[-1:].copy()
-        last_idx = X.index[-1]
-        last_scaled = scaler.transform(last_feat)
-        per_model_future = {k: float(m.predict(last_scaled)[0]) for k,m in trained.items()}
-        ensemble_future = float(np.mean(list(per_model_future.values())))
+        progress = st.progress(0)
+        status = st.empty()
+        n_models = len(models)
+        for i,(name,model) in enumerate(models.items()):
+            status.text(f"Treinando {name} ({i+1}/{n_models})...")
+            # Fit with try/except to avoid silent failures
+            try:
+                model.fit(X_train_s, y_train)
+                trained[name] = model
+                preds[name] = model.predict(X_test_s)
+            except Exception as e:
+                status.text(f"Erro ao treinar {name}: {e}")
+                trained[name] = None
+                preds[name] = np.full(shape=(len(X_test_s),), fill_value=np.nan)
+            progress.progress(int(((i+1)/n_models)*100))
+        status.text("Treinamento concluído!")
+        # Ensure numeric floats
+        per_model_future = {}
+        for name, model in trained.items():
+            try:
+                per_model_future[name] = float(model.predict(scaler.transform(X.iloc[-1:].values))[0]) if model is not None else float('nan')
+            except Exception:
+                per_model_future[name] = float('nan')
+
+        # compute ensemble only with valid numeric model predictions
+        valid_vals = np.array([v for v in per_model_future.values() if not (pd.isna(v) or np.isinf(v))], dtype=float)
+        if valid_vals.size == 0:
+            ensemble_future = 0.0
+            std_preds = 0.0
+        else:
+            ensemble_future = float(np.mean(valid_vals))
+            std_preds = float(np.std(valid_vals))
+
+        # safe capping
         capped = float(np.clip(ensemble_future, -0.5, 0.5))
         daily_rate = (1 + capped)**(1/5) - 1
-        cur_price = float(adv_df['Close'].loc[last_idx])
+        cur_price = float(adv_df['Close'].iloc[-1])
         temp = cur_price
         preds_list = []
         for d in range(1,6):
             temp *= (1+daily_rate)
-            fut_date = (pd.to_datetime(last_idx) + BDay(d)).normalize()
+            fut_date = (pd.to_datetime(adv_df.index[-1]) + BDay(d)).normalize()
             preds_list.append({'Dias':d,'Data':fut_date.strftime('%d/%m/%Y'),'Preço Previsto':temp,'Variação':(temp/cur_price - 1),'Ticker':ticker_symbol})
         preds_df = pd.DataFrame(preds_list)
-        arr = np.array(list(per_model_future.values()))
-        std_preds = float(np.std(arr))
-        max_std = 0.20
-        agreement = max(0.0, 1.0 - min(std_preds, max_std)/max_std)
-        magnitude_penalty = max(0.0, 1.0 - (abs(ensemble_future)/0.5))
+
+        # compute agreement and confidence robustly
+        agreement = max(0.0, 1.0 - min(std_preds, MAX_REASONABLE_STD) / MAX_REASONABLE_STD)
+        magnitude_penalty = max(0.0, 1.0 - (abs(ensemble_future) / 0.5))
         confidence = agreement * magnitude_penalty
-        style = confidence_style(confidence)
-        # store
+        # Clip in [0,1]
+        confidence = float(np.clip(confidence, 0.0, 1.0))
+        concordance_pct = agreement * 100.0
+        confidence_pct = confidence * 100.0
+        rec_label, rec_color = confidence_label_and_color(confidence)
+
+        # store results in session (with clear numeric types and brazilian date format)
         st.session_state['advanced_result'] = {
             'timestamp': pd.Timestamp.now().isoformat(),
             'ticker': ticker_symbol,
             'used_features': used_features,
-            'metrics': metrics_df.to_dict(orient='records'),
-            'per_model_return_predictions': per_model_future,
-            'ensemble_future_return': ensemble_future,
+            'metrics': None,  # metrics can be added if desired (training/test metrics)
+            'per_model_return_predictions': {k: (None if pd.isna(v) else float(v)) for k,v in per_model_future.items()},
+            'ensemble_future_return': float(ensemble_future),
             'predictions_df': preds_df.to_dict(orient='records'),
             'scaler_mean': getattr(scaler, 'mean_', None).tolist() if hasattr(scaler, 'mean_') else None,
             'scaler_scale': getattr(scaler, 'scale_', None).tolist() if hasattr(scaler, 'scale_') else None,
-            'confidence': confidence
+            'confidence': float(confidence),
+            'concordance_pct': float(concordance_pct),
+            'confidence_pct': float(confidence_pct),
+            'rec_label': rec_label,
+            'rec_color': rec_color,
+            'data_used_period': f"{pd.to_datetime(start_date).strftime('%d/%m/%Y')} — {pd.to_datetime(end_date).strftime('%d/%m/%Y')}",
+            'rows_used': int(len(adv_df)),
+            'features_used': used_features
         }
 
-# Mostrar resultado avançado se existir (não será apagado pela execução do simples)
+# Display advanced result if exists (won't be cleared by running simple)
 if st.session_state.get('advanced_result') is not None:
     adv = st.session_state['advanced_result']
     st.subheader("Resultados - Previsão Avançada")
-    st.markdown("**Performance (conjunto de teste)**")
-    metrics_df = pd.DataFrame(adv['metrics'])
-    st.dataframe(metrics_df.style.format({'MAE':'{:.4f}','RMSE':'{:.4f}','R²':'{:.4f}','Acerto Direção':'{:.2%}'}), use_container_width=True)
-    # concordância / confiança / recomendação alinhados, coloridos e fonte maior
-    conf = float(adv.get('confidence', 0.0))
-    conf_style = confidence_style(conf)
-    concordance = max(0.0, (1.0 - np.std(list(adv['per_model_return_predictions'].values())) / 0.20))  # rough normalized
-    concord_pct = max(0.0, min(100.0, concordance * 100))
-    rec_label = conf_style['label']
-    # layout
-    st.markdown(f"""
-    <div style='display:flex;gap:12px;align-items:stretch'>
-      <div style='flex:1;padding:14px;border-radius:8px;background:{conf_style["bg"]};color:{conf_style["color"]};font-size:20px;text-align:center'>
-        <div style='font-weight:700'>Concordância</div>
-        <div style='font-size:22px;margin-top:6px'>{concord_pct:.1f}%</div>
-      </div>
-      <div style='flex:1;padding:14px;border-radius:8px;background:{conf_style["bg"]};color:{conf_style["color"]};font-size:20px;text-align:center'>
-        <div style='font-weight:700'>Score de Confiança</div>
-        <div style='font-size:22px;margin-top:6px'>{conf*100:.1f}%</div>
-      </div>
-      <div style='flex:1;padding:14px;border-radius:8px;background:{conf_style["bg"]};color:{conf_style["color"]};font-size:20px;text-align:center'>
-        <div style='font-weight:700'>Recomendação</div>
-        <div style='font-size:22px;margin-top:6px'>{rec_label}</div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("**Previsão para próximos 5 dias**")
+    # header with data used and period
+    st.markdown(
+        f"<div style='background:#0b1220;padding:10px;border-radius:8px'>"
+        f"<span style='color:#fff;font-size:15px;font-weight:700'>Dados usados:</span> "
+        f"<span style='color:#ddd;margin-left:8px;font-size:14px'>Período: {adv['data_used_period']} | Linhas válidas: {adv['rows_used']} | Features: {len(adv['features_used'])}</span>"
+        f"</div>", unsafe_allow_html=True)
+    # concordance, confidence, recommendation as colored text (foreground) aligned
+    concord_pct = adv.get('concordance_pct', 0.0)
+    confidence_pct = adv.get('confidence_pct', 0.0)
+    rec_label = adv.get('rec_label', 'BAIXA CONFIANÇA')
+    rec_color = adv.get('rec_color', '#E74C3C')
+    st.markdown(
+        f"<div style='display:flex;gap:18px;align-items:center'>"
+        f"<div style='font-size:18px;color:#ddd'><strong>Concordância:</strong> <span style='color:{rec_color};font-size:20px;font-weight:800'>{concord_pct:.1f}%</span></div>"
+        f"<div style='font-size:18px;color:#ddd'><strong>Score de Confiança:</strong> <span style='color:{rec_color};font-size:20px;font-weight:800'>{confidence_pct:.1f}%</span></div>"
+        f"<div style='font-size:18px;color:#ddd'><strong>Recomendação:</strong> <span style='color:{rec_color};font-size:20px;font-weight:800'>{rec_label}</span></div>"
+        f"</div>", unsafe_allow_html=True)
+    # show predictions table
+    st.subheader("Previsão para próximos 5 dias")
     st.dataframe(pd.DataFrame(adv['predictions_df']).style.format({'Preço Previsto':'R$ {:.2f}','Variação':'{:+.2%}'}), use_container_width=True)
+    # per-model predictions
     per_model_df = pd.DataFrame([{'Modelo':k,'Retorno Estimado':v} for k,v in adv['per_model_return_predictions'].items()])
-    st.subheader("Previsões por modelo")
-    st.dataframe(per_model_df.style.format({'Retorno Estimado':'{:+.4f}'}), use_container_width=True)
+    if not per_model_df.empty:
+        st.subheader("Previsões por modelo")
+        st.dataframe(per_model_df.style.format({'Retorno Estimado':'{:+.4f}'}), use_container_width=True)
     # export button only (no extra title)
     mem = io.BytesIO()
     with zipfile.ZipFile(mem, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
         preds_df = pd.DataFrame(adv['predictions_df'])
         zf.writestr('predictions.csv', preds_df.to_csv(index=False))
-        zf.writestr('metrics.json', json.dumps({'timestamp':adv['timestamp'],'ticker':adv['ticker'],'metrics':adv['metrics'],'per_model':adv['per_model_return_predictions'],'ensemble':adv['ensemble_future_return'],'used_features':adv['used_features']}))
-        zf.writestr('meta.txt', f"Ticker:{adv['ticker']}\nExport:{adv['timestamp']}\n")
+        zf.writestr('metadata.json', json.dumps({
+            'timestamp': adv['timestamp'],
+            'ticker': adv['ticker'],
+            'data_used_period': adv['data_used_period'],
+            'rows_used': adv['rows_used'],
+            'features_used': adv['features_used'],
+            'per_model_return_predictions': adv['per_model_return_predictions'],
+            'ensemble_future_return': adv['ensemble_future_return'],
+            'confidence': adv['confidence']
+        }))
     mem.seek(0)
     st.download_button("Exportar Previsão Avançada (ZIP)", mem.getvalue(), file_name=f"analise_avancada_{ticker_symbol}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.zip", mime="application/zip")
 
 st.markdown("---")
 
-# --- Aba final: Importar e Comparar ---
+# --- Importar e comparar (sempre no final) ---
 st.subheader("📂 Importar e Comparar Previsões Exportadas")
 uploaded = st.file_uploader("Carregar ZIP de análise exportada por esta ferramenta", type=["zip"])
 if uploaded is not None:
@@ -372,10 +432,11 @@ if uploaded is not None:
         z = zipfile.ZipFile(io.BytesIO(uploaded.read()))
         if 'predictions.csv' in z.namelist():
             preds = pd.read_csv(io.BytesIO(z.read('predictions.csv')), dtype=str)
-            # parse dates flexible (dayfirst True to accept dd/mm/yyyy)
             preds['Data'] = pd.to_datetime(preds['Data'], dayfirst=True, errors='coerce')
+            preds_display = preds.copy()
+            preds_display['Data'] = preds_display['Data'].dt.strftime('%d/%m/%Y')
             st.write("Predições importadas:")
-            st.dataframe(preds, use_container_width=True)
+            st.dataframe(preds_display, use_container_width=True)
             if st.button("Comparar com preços reais (Yahoo Finance)"):
                 min_date = preds['Data'].min()
                 max_date = preds['Data'].max()
@@ -404,6 +465,7 @@ if uploaded is not None:
                     st.dataframe(comp.style.format({'Preço Previsto':'R$ {:.2f}','Preço Real (fechamento próximo disponível)':'R$ {:.2f}','Erro Abs':'R$ {:.2f}','Erro %':'{:+.2%}'}), use_container_width=True)
         elif 'volatility.json' in z.namelist():
             vol = json.loads(z.read('volatility.json'))
+            # keep the imported date parsed as dd/mm/yyyy if present
             st.write("Arquivo de Volatilidade importado:")
             st.json(vol)
             if st.button("Comparar Volatilidade importada com valor real (Yahoo)"):
@@ -430,6 +492,7 @@ last_update = pd.to_datetime(data.index[-1]).strftime('%d/%m/%Y')
 st.markdown("---")
 st.caption(f"Última atualização dos preços: **{last_update}** — Dados: Yahoo Finance.")
 st.markdown("<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)
+
 
 
 

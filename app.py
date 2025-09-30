@@ -87,12 +87,14 @@ def prepare_advanced_features(data, lookback_days=60, forecast_days=5):
     """
     df = data[['Close', 'Volume', 'RSI', 'MM_Curta', 'MM_Longa', 'Volatility']].copy()
     
-    # Features de preço com múltiplas janelas
-    for days in [1, 3, 5, 10, 20, 30, 60]:
+    # Features de preço com múltiplas janelas - usar períodos mais curtos também
+    periods = [1, 3, 5, 10, 20]  # Reduzir períodos máximos para ter mais dados
+    for days in periods:
         df[f'return_{days}d'] = df['Close'].pct_change(days)
         df[f'volume_ma_{days}d'] = df['Volume'].rolling(days).mean()
-        df[f'high_{days}d'] = df['Close'].rolling(days).max()
-        df[f'low_{days}d'] = df['Close'].rolling(days).min()
+        if days <= 20:  # Apenas para períodos mais curtos para evitar muitos NaN
+            df[f'high_{days}d'] = df['Close'].rolling(days).max()
+            df[f'low_{days}d'] = df['Close'].rolling(days).min()
         df[f'volatility_{days}d'] = df['Close'].pct_change().rolling(days).std()
     
     # Features técnicas avançadas
@@ -106,15 +108,23 @@ def prepare_advanced_features(data, lookback_days=60, forecast_days=5):
     # Target: Direção (1 = sobe, 0 = desce)
     df['target_direction'] = (df['target_future_return'] > 0).astype(int)
     
-    return df.dropna()
+    # Remover NaN de forma mais conservadora - manter mais dados
+    # Primeiro preencher alguns NaN com valores razoáveis
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    df[numeric_cols] = df[numeric_cols].fillna(method='ffill').fillna(method='bfill')
+    
+    # Remover apenas linhas onde o target é NaN (últimas linhas)
+    df = df.dropna(subset=['target_future_return', 'target_direction'])
+    
+    return df
 
 def create_advanced_model():
     """Cria ensemble de modelos"""
     models = {
-        'Random Forest': RandomForestRegressor(n_estimators=200, max_depth=15, random_state=42, n_jobs=-1),
-        'Gradient Boosting': GradientBoostingRegressor(n_estimators=150, max_depth=8, random_state=42),
+        'Random Forest': RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1),
+        'Gradient Boosting': GradientBoostingRegressor(n_estimators=100, max_depth=6, random_state=42),
         'SVR': SVR(kernel='rbf', C=1.0, gamma='scale'),
-        'Neural Network': MLPRegressor(hidden_layer_sizes=(100, 50), max_iter=1000, random_state=42)
+        'Neural Network': MLPRegressor(hidden_layer_sizes=(50, 25), max_iter=500, random_state=42)
     }
     return models
 
@@ -136,7 +146,8 @@ ticker_symbol = tickers_df[tickers_df['display'] == selected_display]['ticker'].
 company_name = tickers_df[tickers_df['display'] == selected_display]['nome'].iloc[0]
 ticker = f"{ticker_symbol}.SA"
 
-start_date = st.sidebar.date_input("Data de Início", date(2020, 1, 1), format="DD/MM/YYYY")
+# Ajustar data inicial padrão para garantir dados suficientes
+start_date = st.sidebar.date_input("Data de Início", date(2019, 1, 1), format="DD/MM/YYYY")
 end_date = st.sidebar.date_input("Data de Fim", date.today(), format="DD/MM/YYYY")
 
 data = load_data(ticker, start_date, end_date)
@@ -223,14 +234,19 @@ else:
                 # Preparar dados avançados
                 advanced_data = prepare_advanced_features(data, lookback_days=60, forecast_days=5)
                 
-                if len(advanced_data) < 100:
-                    st.warning("⚠️ Dados insuficientes para análise avançada. São necessários pelo menos 100 dias de histórico.")
+                # Verificar se temos dados suficientes após o processamento
+                if len(advanced_data) < 50:  # Reduzir o mínimo necessário
+                    st.warning(f"⚠️ Dados insuficientes para análise avançada. Necessários pelo menos 50 dias úteis após processamento. Disponíveis: {len(advanced_data)} dias.")
+                    st.info(f"💡 Dica: Selecione um período mais longo (a partir de 2019) para ter dados suficientes.")
                 else:
                     # Separar features e target
                     feature_columns = [col for col in advanced_data.columns if col.startswith(('return_', 'volume_ma_', 'high_', 'low_', 'volatility_', 'price_vs_', 'ma_cross'))]
                     X = advanced_data[feature_columns]
                     y_return = advanced_data['target_future_return']  # Retorno percentual
                     y_direction = advanced_data['target_direction']    # Direção
+                    
+                    # Mostrar informações sobre os dados
+                    st.info(f"📊 Dados disponíveis para treinamento: {len(X)} dias úteis")
                     
                     # Split temporal (não shuffle para time series)
                     split_idx = int(len(X) * 0.8)
@@ -243,10 +259,17 @@ else:
                     trained_models = {}
                     return_predictions = {}
                     
-                    for name, model in models.items():
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    for i, (name, model) in enumerate(models.items()):
+                        status_text.text(f"Treinando {name}...")
                         model.fit(X_train, y_train_return)
                         trained_models[name] = model
                         return_predictions[name] = model.predict(X_test)
+                        progress_bar.progress((i + 1) / len(models))
+                    
+                    status_text.text("Treinamento concluído!")
                     
                     # Ensemble
                     ensemble_pred = ensemble_predict(trained_models, X_test)
@@ -336,7 +359,7 @@ else:
                     fig_forecast = go.Figure()
                     
                     # Histórico recente
-                    historical_days = 30
+                    historical_days = min(30, len(data))
                     hist_data = data['Close'].iloc[-historical_days:]
                     fig_forecast.add_trace(go.Scatter(
                         x=hist_data.index, y=hist_data.values,
@@ -354,7 +377,7 @@ else:
                     ))
                     
                     # Intervalo de confiança (simulado)
-                    confidence = ensemble_future * 0.3  # 30% de margem de erro
+                    confidence = abs(ensemble_future) * 0.5  # 50% de margem de erro baseada na volatilidade
                     upper_bound = [current_price * (1 + ensemble_future * (i/5) + confidence * (i/5)) for i in range(1, 6)]
                     lower_bound = [current_price * (1 + ensemble_future * (i/5) - confidence * (i/5)) for i in range(1, 6)]
                     
@@ -381,14 +404,23 @@ else:
                     
                     # Calcular métricas de confiança
                     model_agreement = np.std(list(future_predictions.values()))
-                    confidence_score = max(0, 1 - model_agreement * 10)  # Score de 0-1
+                    confidence_score = max(0, 1 - model_agreement * 5)  # Ajustar multiplicador
                     
                     col1, col2, col3 = st.columns(3)
                     col1.metric("Concordância entre Modelos", f"{(1 - model_agreement) * 100:.1f}%")
                     col2.metric("Score de Confiança", f"{confidence_score * 100:.1f}%")
-                    col3.metric("Recomendação", 
-                               "ALTA CONFIANÇA" if confidence_score > 0.7 else 
-                               "MÉDIA CONFIANÇA" if confidence_score > 0.5 else "BAIXA CONFIANÇA")
+                    
+                    if confidence_score > 0.7:
+                        recomendacao = "ALTA CONFIANÇA"
+                        cor = "green"
+                    elif confidence_score > 0.5:
+                        recomendacao = "MÉDIA CONFIANÇA" 
+                        cor = "orange"
+                    else:
+                        recomendacao = "BAIXA CONFIANÇA"
+                        cor = "red"
+                    
+                    col3.metric("Recomendação", recomendacao)
                     
                     # Disclaimer importante
                     st.warning("""

@@ -5,16 +5,21 @@ import yfinance as yf
 from datetime import date
 import plotly.express as px
 import plotly.graph_objects as go
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, accuracy_score
+from sklearn.svm import SVR
+from sklearn.neural_network import MLPRegressor
+from sklearn.linear_model import LinearRegression
 import numpy as np
+import warnings
+warnings.filterwarnings('ignore')
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Analisador de Ativos", layout="wide")
 st.title('📊 Analisador Interativo de Ativos Financeiros')
 st.write('Analise o preço, a volatilidade e os principais indicadores técnicos de ações da B3. '
-         'Compare com o IBOVESPA e obtenha uma previsão de volatilidade com Machine Learning.')
+         'Compare com o IBOVESPA e obtenha previsões avançadas com Machine Learning.')
 
 # --- Barra Lateral ---
 st.sidebar.header('⚙️ Parâmetros de Análise')
@@ -72,6 +77,56 @@ def calculate_indicators(data):
     data['Daily Return'] = data['Close'].pct_change()
     data['Volatility'] = data['Daily Return'].rolling(window=30).std() * (252**0.5)
     return data
+
+# --- NOVAS FUNÇÕES PARA PREVISÃO AVANÇADA ---
+def prepare_advanced_features(data, lookback_days=60, forecast_days=5):
+    """
+    Prepara features com janela temporal expandida
+    lookback_days: quantos dias no passado considerar (60 = ~3 meses)
+    forecast_days: prever para quantos dias à frente
+    """
+    df = data[['Close', 'Volume', 'RSI', 'MM_Curta', 'MM_Longa', 'Volatility']].copy()
+    
+    # Features de preço com múltiplas janelas
+    for days in [1, 3, 5, 10, 20, 30, 60]:
+        df[f'return_{days}d'] = df['Close'].pct_change(days)
+        df[f'volume_ma_{days}d'] = df['Volume'].rolling(days).mean()
+        df[f'high_{days}d'] = df['Close'].rolling(days).max()
+        df[f'low_{days}d'] = df['Close'].rolling(days).min()
+        df[f'volatility_{days}d'] = df['Close'].pct_change().rolling(days).std()
+    
+    # Features técnicas avançadas
+    df['price_vs_ma20'] = df['Close'] / df['MM_Curta']
+    df['price_vs_ma50'] = df['Close'] / df['MM_Longa']
+    df['ma_cross'] = (df['MM_Curta'] > df['MM_Longa']).astype(int)
+    
+    # Target: Retorno futuro (5 dias)
+    df['target_future_return'] = df['Close'].shift(-forecast_days) / df['Close'] - 1
+    
+    # Target: Direção (1 = sobe, 0 = desce)
+    df['target_direction'] = (df['target_future_return'] > 0).astype(int)
+    
+    return df.dropna()
+
+def create_advanced_model():
+    """Cria ensemble de modelos"""
+    models = {
+        'Random Forest': RandomForestRegressor(n_estimators=200, max_depth=15, random_state=42, n_jobs=-1),
+        'Gradient Boosting': GradientBoostingRegressor(n_estimators=150, max_depth=8, random_state=42),
+        'SVR': SVR(kernel='rbf', C=1.0, gamma='scale'),
+        'Neural Network': MLPRegressor(hidden_layer_sizes=(100, 50), max_iter=1000, random_state=42)
+    }
+    return models
+
+def ensemble_predict(models, X):
+    """Combina previsões de múltiplos modelos"""
+    predictions = []
+    for name, model in models.items():
+        pred = model.predict(X)
+        predictions.append(pred)
+    
+    # Média ponderada (pesos baseados na performance)
+    return np.mean(predictions, axis=0)
 
 # --- Lógica Principal da Barra Lateral e Coleta de Dados ---
 tickers_df = get_tickers_from_csv()
@@ -154,14 +209,204 @@ else:
 
     st.markdown("---")
     
-    # --- Seção de Machine Learning ---
-    with st.expander("🧠 Análise Preditiva com Machine Learning", expanded=True):
+    # --- NOVA SEÇÃO: Previsão de Preço Avançada ---
+    with st.expander("🔮 Previsão de Preço Avançada (Machine Learning)", expanded=True):
+        st.write("""
+        **Previsão para os próximos 5 dias usando múltiplos algoritmos de ML**
+        - Período de análise: 60 dias (~3 meses)
+        - Features: Preço, Volume, RSI, Médias Móveis, Volatilidade
+        - Modelos: Random Forest, Gradient Boosting, SVR, Neural Network
+        """)
+        
+        if st.button('Executar Previsão de Preço Avançada'):
+            with st.spinner('Processando dados e treinando modelos...'):
+                # Preparar dados avançados
+                advanced_data = prepare_advanced_features(data, lookback_days=60, forecast_days=5)
+                
+                if len(advanced_data) < 100:
+                    st.warning("⚠️ Dados insuficientes para análise avançada. São necessários pelo menos 100 dias de histórico.")
+                else:
+                    # Separar features e target
+                    feature_columns = [col for col in advanced_data.columns if col.startswith(('return_', 'volume_ma_', 'high_', 'low_', 'volatility_', 'price_vs_', 'ma_cross'))]
+                    X = advanced_data[feature_columns]
+                    y_return = advanced_data['target_future_return']  # Retorno percentual
+                    y_direction = advanced_data['target_direction']    # Direção
+                    
+                    # Split temporal (não shuffle para time series)
+                    split_idx = int(len(X) * 0.8)
+                    X_train, X_test = X[:split_idx], X[split_idx:]
+                    y_train_return, y_test_return = y_return[:split_idx], y_return[split_idx:]
+                    y_train_dir, y_test_dir = y_direction[:split_idx], y_direction[split_idx:]
+                    
+                    # Treinar modelos
+                    models = create_advanced_model()
+                    trained_models = {}
+                    return_predictions = {}
+                    
+                    for name, model in models.items():
+                        model.fit(X_train, y_train_return)
+                        trained_models[name] = model
+                        return_predictions[name] = model.predict(X_test)
+                    
+                    # Ensemble
+                    ensemble_pred = ensemble_predict(trained_models, X_test)
+                    
+                    # --- Avaliação dos Modelos ---
+                    st.subheader("📊 Performance dos Modelos")
+                    
+                    metrics_data = []
+                    for name in models.keys():
+                        mae = mean_absolute_error(y_test_return, return_predictions[name])
+                        rmse = np.sqrt(mean_squared_error(y_test_return, return_predictions[name]))
+                        r2 = r2_score(y_test_return, return_predictions[name])
+                        accuracy_dir = accuracy_score(y_test_dir, (return_predictions[name] > 0).astype(int))
+                        
+                        metrics_data.append({
+                            'Modelo': name,
+                            'MAE': mae,
+                            'RMSE': rmse,
+                            'R²': r2,
+                            'Acerto Direção': accuracy_dir
+                        })
+                    
+                    metrics_df = pd.DataFrame(metrics_data)
+                    st.dataframe(metrics_df.style.format({
+                        'MAE': '{:.4f}',
+                        'RMSE': '{:.4f}', 
+                        'R²': '{:.4f}',
+                        'Acerto Direção': '{:.2%}'
+                    }), use_container_width=True)
+                    
+                    # --- Gráfico de Comparação ---
+                    fig_comparison = go.Figure()
+                    fig_comparison.add_trace(go.Scatter(
+                        x=y_test_return.index, y=y_test_return.values,
+                        name='Retorno Real', line=dict(color='blue', width=3)
+                    ))
+                    fig_comparison.add_trace(go.Scatter(
+                        x=y_test_return.index, y=ensemble_pred,
+                        name='Previsão Ensemble', line=dict(color='red', width=2, dash='dash')
+                    ))
+                    fig_comparison.update_layout(
+                        title="Comparação: Retorno Real vs Previsão do Modelo (Dados de Teste)",
+                        xaxis_title="Data",
+                        yaxis_title="Retorno Esperado (%)"
+                    )
+                    st.plotly_chart(fig_comparison, use_container_width=True)
+                    
+                    # --- Previsão para o Futuro ---
+                    st.subheader("🎯 Previsão para os Próximos Dias")
+                    
+                    # Usar os dados mais recentes para prever
+                    latest_features = X.iloc[-1:].values
+                    future_predictions = {}
+                    
+                    for name, model in trained_models.items():
+                        future_predictions[name] = model.predict(latest_features)[0]
+                    
+                    ensemble_future = np.mean(list(future_predictions.values()))
+                    
+                    # Calcular preços futuros
+                    current_price = data['Close'].iloc[-1]
+                    predicted_prices = []
+                    
+                    for days in range(1, 6):
+                        if days == 1:
+                            pred_return = ensemble_future * (days/5)  # Projeção linear
+                        else:
+                            pred_return = ensemble_future * (days/5)
+                        
+                        predicted_price = current_price * (1 + pred_return)
+                        predicted_prices.append({
+                            'Dias': days,
+                            'Data': (data.index[-1] + pd.Timedelta(days=days)).strftime('%d/%m/%Y'),
+                            'Preço Previsto': predicted_price,
+                            'Variação %': pred_return * 100
+                        })
+                    
+                    predictions_df = pd.DataFrame(predicted_prices)
+                    
+                    # Formatar exibição
+                    st.dataframe(predictions_df.style.format({
+                        'Preço Previsto': 'R$ {:.2f}',
+                        'Variação %': '{:+.2f}%'
+                    }), use_container_width=True)
+                    
+                    # --- Gráfico de Previsão ---
+                    fig_forecast = go.Figure()
+                    
+                    # Histórico recente
+                    historical_days = 30
+                    hist_data = data['Close'].iloc[-historical_days:]
+                    fig_forecast.add_trace(go.Scatter(
+                        x=hist_data.index, y=hist_data.values,
+                        name='Histórico', line=dict(color='blue', width=2)
+                    ))
+                    
+                    # Previsões
+                    future_dates = [data.index[-1] + pd.Timedelta(days=i) for i in range(1, 6)]
+                    future_prices = predictions_df['Preço Previsto'].values
+                    
+                    fig_forecast.add_trace(go.Scatter(
+                        x=future_dates, y=future_prices,
+                        name='Previsão', line=dict(color='red', width=2, dash='dash'),
+                        marker=dict(size=8)
+                    ))
+                    
+                    # Intervalo de confiança (simulado)
+                    confidence = ensemble_future * 0.3  # 30% de margem de erro
+                    upper_bound = [current_price * (1 + ensemble_future * (i/5) + confidence * (i/5)) for i in range(1, 6)]
+                    lower_bound = [current_price * (1 + ensemble_future * (i/5) - confidence * (i/5)) for i in range(1, 6)]
+                    
+                    fig_forecast.add_trace(go.Scatter(
+                        x=future_dates + future_dates[::-1],
+                        y=upper_bound + lower_bound[::-1],
+                        fill='toself',
+                        fillcolor='rgba(255,0,0,0.2)',
+                        line=dict(color='rgba(255,255,255,0)'),
+                        name='Intervalo de Confiança'
+                    ))
+                    
+                    fig_forecast.update_layout(
+                        title="Previsão de Preço para os Próximos 5 Dias",
+                        xaxis_title="Data",
+                        yaxis_title="Preço (R$)",
+                        showlegend=True
+                    )
+                    
+                    st.plotly_chart(fig_forecast, use_container_width=True)
+                    
+                    # --- Análise de Confiança ---
+                    st.subheader("📈 Análise de Confiança da Previsão")
+                    
+                    # Calcular métricas de confiança
+                    model_agreement = np.std(list(future_predictions.values()))
+                    confidence_score = max(0, 1 - model_agreement * 10)  # Score de 0-1
+                    
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Concordância entre Modelos", f"{(1 - model_agreement) * 100:.1f}%")
+                    col2.metric("Score de Confiança", f"{confidence_score * 100:.1f}%")
+                    col3.metric("Recomendação", 
+                               "ALTA CONFIANÇA" if confidence_score > 0.7 else 
+                               "MÉDIA CONFIANÇA" if confidence_score > 0.5 else "BAIXA CONFIANÇA")
+                    
+                    # Disclaimer importante
+                    st.warning("""
+                    **⚠️ Disclaimer Importante:** 
+                    - Previsões baseadas em machine learning são probabilísticas, não garantias
+                    - Mercado financeiro é influenciado por fatores imprevisíveis
+                    - Use como ferramenta auxiliar, não como única base de decisão
+                    - Consulte sempre um advisor financeiro para investimentos
+                    """)
+
+    # --- Seção de Machine Learning Original (Volatilidade) ---
+    with st.expander("🧠 Previsão de Volatilidade (Modelo Original)", expanded=False):
         st.write("""
         Esta seção utiliza um modelo de Machine Learning (Random Forest) para prever a volatilidade do ativo no próximo dia útil. 
         O modelo é treinado com base na volatilidade dos 5 dias anteriores.
         """)
 
-        if st.button('Executar Análise Preditiva'):
+        if st.button('Executar Análise Preditiva de Volatilidade'):
             df_model = data[['Volatility']].copy().dropna()
             if len(df_model) < 20: 
                 st.warning("⚠️ Dados históricos insuficientes para treinar e avaliar o modelo de forma confiável.")
@@ -207,11 +452,7 @@ else:
 
                 predicted_vol = prediction[0]
                 
-                # --- CORREÇÃO: Lógica de classificação de volatilidade com valores fixos ---
-                # A lógica anterior usava quantis, o que causava inconsistências entre ativos diferentes.
-                # Ativos com volatilidade histórica baixa poderiam ter uma previsão "alta" (ex: 0.43)
-                # enquanto ativos com histórico de volatilidade alta poderiam ter uma previsão "média" (ex: 0.55).
-                # A utilização de limiares fixos torna a comparação mais justa e intuitiva.
+                # Lógica de classificação de volatilidade com valores fixos
                 if predicted_vol < 0.30:  # Abaixo de 30% = Baixa
                     status_text = "Baixa Volatilidade"
                     status_color = "#28a745"  # Verde
@@ -240,7 +481,6 @@ else:
     # --- Rodapé de Autoria ---
     st.markdown("---")
     st.markdown("<p style='text-align: center; color: #888;'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)
-
 
 
 

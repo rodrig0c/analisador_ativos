@@ -188,14 +188,44 @@ else:
                 st.plotly_chart(fig_eval, use_container_width=True)
 
                 # --- Previsão Final ---
-                st.subheader("Previsão para o Próximo Dia")
+                st.subheader("Previsão para o Próximo Dia Útil")
                 prediction = model.predict(X.iloc[-1:].values)
-                next_day = (data.index[-1] + pd.Timedelta(days=1)).strftime('%d/%m/%Y')
                 
-                st.metric(label=f"📅 Previsão de Volatilidade para {next_day}", value=f"{prediction[0]:.4f}")
+                # --- MELHORIA: Lógica de Data e Cor ---
+                last_date = data.index[-1]
+                next_day = last_date + pd.Timedelta(days=1)
+                if next_day.weekday() == 5:  # Sábado
+                    next_day += pd.Timedelta(days=2)
+                elif next_day.weekday() == 6:  # Domingo
+                    next_day += pd.Timedelta(days=1)
+                next_day_str = next_day.strftime('%d/%m/%Y')
+
+                predicted_vol = prediction[0]
+                vol_q1 = y.quantile(0.25)
+                vol_q3 = y.quantile(0.75)
+
+                if predicted_vol < vol_q1:
+                    status_text = "Baixa Volatilidade"
+                    status_color = "#28a745"  # Verde
+                elif predicted_vol > vol_q3:
+                    status_text = "Alta Volatilidade"
+                    status_color = "#dc3545"  # Vermelho
+                else:
+                    status_text = "Média Volatilidade"
+                    status_color = "#ffc107"  # Amarelo
+                
+                st.markdown(f"""
+                <div style='border: 1px solid #444; border-radius: 10px; padding: 20px; text-align: center;'>
+                    <p style='font-size: 1.1em; margin-bottom: 5px; color: #FAFAFA;'>Previsão de Volatilidade para <strong>{next_day_str}</strong></p>
+                    <p style='font-size: 2.5em; font-weight: bold; color: {status_color}; margin: 0;'>{predicted_vol:.4f}</p>
+                    <p style='font-size: 1.2em; font-weight: bold; color: {status_color}; margin-top: 5px;'>{status_text}</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
                 st.info('**Disclaimer:** Este modelo é apenas para fins educacionais e não constitui uma recomendação de investimento.')
 
     # --- Nota de atualização ---
     last_update_date = data.index[-1].strftime('%d/%m/%Y')
     st.markdown("---")
     st.caption(f"📅 Última atualização dos preços: **{last_update_date}** — Dados fornecidos pelo Yahoo Finance (podem ter atraso).")
+

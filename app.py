@@ -161,7 +161,7 @@ else:
             prediction = model.predict(last_features)
 
             st.success('Modelo treinado com sucesso!')
-          next_day = (pd.to_datetime(data.index[-1], dayfirst=True) + pd.Timedelta(days=1)).strftime('%d/%m/%Y')
+            next_day = (pd.to_datetime(data.index[-1], dayfirst=True) + pd.Timedelta(days=1)).strftime('%d/%m/%Y')
             st.metric(label=f"Previsão de Volatilidade para {next_day}", value=f"{prediction[0]:.4f}")
             st.info('**Disclaimer:** Este é um modelo educacional simplificado e não deve ser usado como conselho de investimento.')
     

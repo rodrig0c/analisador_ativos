@@ -1,7 +1,7 @@
 # app.py
-# Corrigido: Prophet (ds,y), métricas baseadas em PREÇOS (MAPE estável),
-# ensemble (RF, GB, SVR, MLP) + Prophet + LSTM (se instalados),
-# backtest com linhas (preço real x previsto), arredondamento e formatação.
+# Analisador completo com ensemble (RF, GB, SVR, MLP, Prophet, LSTM quando disponíveis),
+# Prophet fix (ds,y), tratamento robusto de erros por modelo, .na_rep() para Styler,
+# backtest com linhas (preço real x previsto), confiança baseada em MAPE de preço.
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -20,9 +20,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 warnings.filterwarnings('ignore')
-st.set_page_config(page_title="Analisador (Corrigido: Prophet + Métricas preço)", layout="wide")
+st.set_page_config(page_title="Analisador (Corrigido)", layout="wide")
 
-# Optional libs
+# Optional libraries
 HAS_PROPHET = False
 HAS_TF = False
 try:
@@ -40,7 +40,7 @@ except Exception:
     HAS_TF = False
 
 # UI
-st.title('📊 Analisador — Prophet corrigido + Backtest (linhas)')
+st.title('📊 Analisador de Ativos — Ensemble robusto (Prophet corrigido)')
 st.write('Todas as datas em dd/mm/YYYY. Confiança = (1 − MAPE_preço) × 100.')
 
 st.sidebar.header('⚙️ Parâmetros')
@@ -65,7 +65,8 @@ def get_tickers_from_csv():
         return df
     except Exception:
         fallback = {'ticker':['PETR4','VALE3','ITUB4','MGLU3'],'nome':['Petrobras','Vale','Itaú','Magazine Luiza']}
-        df = pd.DataFrame(fallback); df['display'] = df['nome'] + ' (' + df['ticker'] + ')'
+        df = pd.DataFrame(fallback)
+        df['display'] = df['nome'] + ' (' + df['ticker'] + ')'
         return df
 
 @st.cache_data
@@ -73,9 +74,12 @@ def load_data(ticker, start, end):
     s = pd.to_datetime(start)
     e = pd.to_datetime(end) + pd.Timedelta(days=1)
     df = yf.download(ticker, start=s.strftime('%Y-%m-%d'), end=e.strftime('%Y-%m-%d'), progress=False)
-    if df.empty: return df
-    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-    if 'Volume' not in df.columns: df['Volume'] = 0
+    if df.empty:
+        return df
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    if 'Volume' not in df.columns:
+        df['Volume'] = 0
     df.index = pd.to_datetime(df.index)
     return df
 
@@ -106,7 +110,8 @@ def prepare_advanced_features(df, forecast_days=FORECAST_DAYS):
         d[f'low_{p}d'] = d['Close'].rolling(window=p, min_periods=1).min()
         d[f'volatility_{p}d'] = d['Close'].pct_change().rolling(window=p, min_periods=1).std()
     if 'Volume' in d.columns and d['Volume'].sum() > 0:
-        for p in periods: d[f'volume_ma_{p}d'] = d['Volume'].rolling(window=p, min_periods=1).mean()
+        for p in periods:
+            d[f'volume_ma_{p}d'] = d['Volume'].rolling(window=p, min_periods=1).mean()
     d['price_vs_ma20'] = d['Close'] / d['MM_Curta'].replace(0, np.nan)
     d['price_vs_ma50'] = d['Close'] / d['MM_Longa'].replace(0, np.nan)
     d['ma_cross'] = (d['MM_Curta'] > d['MM_Longa']).astype(int)
@@ -129,7 +134,6 @@ def create_classic_models():
         'Neural Net': MLPRegressor(hidden_layer_sizes=(64,32), max_iter=1000, random_state=42)
     }
 
-# Metrics: price-based MAPE stable (prices rarely near zero)
 def compute_price_metrics(y_true_price, y_pred_price):
     y_t = np.array(y_true_price, dtype=float)
     y_p = np.array(y_pred_price, dtype=float)
@@ -152,7 +156,6 @@ def compute_return_hitrate(y_true_ret, y_pred_ret):
         return None
     return float(np.mean((np.sign(y_t[mask]) == np.sign(y_p[mask])).astype(float)))
 
-# Backtest ensemble with price metrics and Prophet fixed
 def backtest_ensemble(adv_df, features, include_prophet=HAS_PROPHET, include_lstm=HAS_TF, progress_callback=None):
     X = adv_df[features]
     y_ret = adv_df['target_future_return']
@@ -173,7 +176,6 @@ def backtest_ensemble(adv_df, features, include_prophet=HAS_PROPHET, include_lst
     total = len(models) + (1 if include_prophet else 0) + (1 if include_lstm else 0)
     done = 0
 
-    # classic models
     for name, model in models.items():
         try:
             model.fit(X_train_s, y_train_ret)
@@ -190,7 +192,7 @@ def backtest_ensemble(adv_df, features, include_prophet=HAS_PROPHET, include_lst
         done += 1
         if progress_callback: progress_callback(done / total)
 
-    # Prophet: train on Close -> safe ds,y creation and per-date predict
+    # Prophet as price predictor with strict ds/y creation per-target
     if include_prophet:
         if HAS_PROPHET:
             try:
@@ -209,10 +211,8 @@ def backtest_ensemble(adv_df, features, include_prophet=HAS_PROPHET, include_lst
                     df_pred = pd.DataFrame({'ds': [target_date]})
                     df_pred['ds'] = pd.to_datetime(df_pred['ds'])
                     fc = m.predict(df_pred)
-                    if 'yhat' in fc.columns and not fc['yhat'].isna().all():
-                        pred_price = float(fc['yhat'].iloc[0])
-                    else:
-                        pred_price = float(train_close['y'].iloc[-1])
+                    # safe extraction
+                    pred_price = float(fc['yhat'].iloc[0]) if 'yhat' in fc.columns and not fc['yhat'].isna().all() else float(train_close['y'].iloc[-1])
                     preds_price.append(pred_price)
                 preds_price = np.array(preds_price)
                 base_prices = adv_df['Close'].iloc[split:split+len(X_test)].values
@@ -259,19 +259,17 @@ def backtest_ensemble(adv_df, features, include_prophet=HAS_PROPHET, include_lst
         done += 1
         if progress_callback: progress_callback(done / total)
 
-    # Ensemble predicted price: mean across model predicted prices
+    # Ensemble predicted price: mean across models' predicted prices
     pred_price_matrix = np.vstack([v['pred_price'] for v in trained.values()])
     pred_price_matrix = np.where(np.isfinite(pred_price_matrix), pred_price_matrix, np.nan)
-    ensemble_price = np.nanmean(pred_price_matrix, axis=0)
-    # compute ensemble price metrics vs real price
+    with np.errstate(all='ignore'):
+        ensemble_price = np.nanmean(pred_price_matrix, axis=0)
     price_metrics_ens = compute_price_metrics(y_test_price.values, ensemble_price)
-    # compute ensemble hits using returns derived from ensemble_price
     base_prices = adv_df['Close'].iloc[split:split+len(X_test)].values
     ensemble_ret = ensemble_price / base_prices - 1
     hit_ens = compute_return_hitrate(y_test_ret.values, ensemble_ret)
     results['Ensemble'] = {'price': price_metrics_ens, 'hitrate': hit_ens}
 
-    # DataFrame for plotting: date, real_future_price, ensemble_pred_price (2 decimals)
     df_plot = pd.DataFrame({
         'Data': adv_df.index[split:split+len(X_test)],
         'RealPrice': np.array(y_test_price.values, dtype=float),
@@ -295,7 +293,7 @@ ticker_symbol = tickers_df[tickers_df['display'] == selected_display]['ticker'].
 company_name = tickers_df[tickers_df['display'] == selected_display]['nome'].iloc[0]
 ticker = f"{ticker_symbol}.SA"
 
-# clear state on ticker change
+# clear analyses when ticker changes
 if 'last_ticker' not in st.session_state:
     st.session_state['last_ticker'] = ticker_symbol
 else:
@@ -424,7 +422,6 @@ if st.button('Executar Previsão Avançada', key='run_advanced'):
         with st.spinner("Executando backtest (80/20) e treinando modelos..."):
             bt = backtest_ensemble(adv_df, used_features, include_prophet=True, include_lstm=True, progress_callback=prog)
 
-        # format table with price metrics & hitrate
         metrics = bt['results']
         rows = []
         for k, v in metrics.items():
@@ -436,9 +433,17 @@ if st.button('Executar Previsão Avançada', key='run_advanced'):
                 hit = v.get('hitrate')
                 rows.append({'Modelo': k, 'MAE (R$)': mae, 'RMSE (R$)': rmse, 'MAPE (%)': (mape * 100 if mape is not None else None), 'HitRate': (hit if hit is not None else None), 'Erro': None})
         metrics_df = pd.DataFrame(rows)
-        # display with formatting
+
+        # Render styled dataframe safely: do NOT fillna before formatting; use na_rep
+        sty = metrics_df.style.format({
+            'MAE (R$)': lambda v: f"R$ {v:,.2f}" if pd.notna(v) else "N/A",
+            'RMSE (R$)': lambda v: f"R$ {v:,.2f}" if pd.notna(v) else "N/A",
+            'MAPE (%)': lambda v: f"{v:.2f}%" if pd.notna(v) else "N/A",
+            'HitRate': lambda v: f"{v:.2%}" if pd.notna(v) else "N/A",
+            'Erro': lambda v: v if pd.notna(v) else ""
+        }).na_rep("N/A")
         st.subheader("Backtest (80% treino / 20% teste) — métricas (preço)")
-        st.dataframe(metrics_df.fillna("N/A").style.format({'MAE (R$)': lambda v: f"R$ {v:,.2f}" if pd.notna(v) else "N/A", 'RMSE (R$)': lambda v: f"R$ {v:,.2f}" if pd.notna(v) else "N/A", 'MAPE (%)': lambda v: f"{v:.2f}%" if pd.notna(v) else "N/A", 'HitRate': lambda v: f"{v:.2%}" if pd.notna(v) else "N/A"}), use_container_width=True)
+        st.dataframe(sty, use_container_width=True)
 
         # ensemble confidence from price MAPE
         ensemble_price_metrics = metrics.get('Ensemble', {}).get('price', {})
@@ -446,7 +451,7 @@ if st.button('Executar Previsão Avançada', key='run_advanced'):
         conf_pct, conf_label, conf_color = confidence_from_price_mape(ensemble_mape)
         st.markdown(f"<div style='background:#0b1220;padding:8px;border-radius:8px'><span style='color:#ddd;font-size:16px;font-weight:700'>Confiança (1 − MAPE_preço):</span> <span style='color:{conf_color};font-size:20px;font-weight:900;margin-left:12px'>{conf_label} ({conf_pct:.1f}%)</span></div>", unsafe_allow_html=True)
 
-        # Final predictions (use ensemble of models' latest test predictions as proxy)
+        # Final predictions
         trained = bt['trained']
         per_model_latest_ret = {}
         for name, info in trained.items():
@@ -475,7 +480,7 @@ if st.button('Executar Previsão Avançada', key='run_advanced'):
             st.markdown(f"<div style='display:flex;justify-content:space-between;align-items:center;padding:8px 6px;border-radius:6px;margin-bottom:6px'><div style='color:#ddd;font-size:16px'>{r['Data']}</div><div style='color:#00BFFF;font-size:28px;font-weight:900'>R$ {r['Preço Previsto']:,.2f}</div><div style='color:#ddd;font-size:16px'>{r['Variação']:+.2%}</div></div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Backtest plot: real vs ensemble predicted prices (lines)
+        # Backtest plot
         df_plot = bt['df_plot'].copy()
         df_plot['Data'] = pd.to_datetime(df_plot['Data'])
         fig_bt = go.Figure()
@@ -570,4 +575,5 @@ last_update = pd.to_datetime(data.index[-1]).strftime('%d/%m/%Y')
 st.markdown("---")
 st.caption(f"Última atualização dos preços: **{last_update}** — Dados: Yahoo Finance.")
 st.markdown("<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)
+
 

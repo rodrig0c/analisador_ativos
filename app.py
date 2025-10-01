@@ -1,7 +1,11 @@
 # app.py
-# Analisador completo com ensemble (RF, GB, SVR, MLP, Prophet, LSTM quando disponíveis),
-# Prophet fix (ds,y), tratamento robusto de erros por modelo, .na_rep() para Styler,
-# backtest com linhas (preço real x previsto), confiança baseada em MAPE de preço.
+# Versão melhorada com:
+# - Correção do Prophet (usando BDay para datas de previsão)
+# - Correção da coluna de erro na tabela de métricas
+# - Pilar 1: Gráfico de Feature Importance para explicabilidade do modelo
+# - Pilar 3: Gráfico de simulação de rentabilidade (Estratégia vs Buy & Hold)
+# - Melhorias de UX com st.expander
+
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -20,7 +24,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 warnings.filterwarnings('ignore')
-st.set_page_config(page_title="Analisador (Corrigido)", layout="wide")
+st.set_page_config(page_title="Analisador de Ativos", layout="wide")
 
 # Optional libraries
 HAS_PROPHET = False
@@ -39,9 +43,9 @@ try:
 except Exception:
     HAS_TF = False
 
-# UI
-st.title('📊 Analisador de Ativos — Ensemble robusto (Prophet corrigido)')
-st.write('Todas as datas em dd/mm/YYYY. Confiança = (1 − MAPE_preço) × 100.')
+# --- UI
+st.title('📊 Analisador de Ativos Avançado')
+st.write('Um projeto de portfólio para análise preditiva de ativos, com foco em explicabilidade e backtesting de performance.')
 
 st.sidebar.header('⚙️ Parâmetros')
 start_default = date(2019, 1, 1)
@@ -176,9 +180,14 @@ def backtest_ensemble(adv_df, features, include_prophet=HAS_PROPHET, include_lst
     total = len(models) + (1 if include_prophet else 0) + (1 if include_lstm else 0)
     done = 0
 
+    # Adicionado para capturar o modelo RF para feature importance
+    trained_rf_model = None
+
     for name, model in models.items():
         try:
             model.fit(X_train_s, y_train_ret)
+            if name == 'Random Forest':
+                trained_rf_model = model # Captura o modelo treinado
             preds_ret = model.predict(X_test_s)
             base_prices = adv_df['Close'].iloc[split:split+len(X_test)].values
             preds_price = (1 + preds_ret) * base_prices
@@ -192,7 +201,7 @@ def backtest_ensemble(adv_df, features, include_prophet=HAS_PROPHET, include_lst
         done += 1
         if progress_callback: progress_callback(done / total)
 
-    # Prophet as price predictor with strict ds/y creation per-target
+    # --- CORREÇÃO PROPHET ---
     if include_prophet:
         if HAS_PROPHET:
             try:
@@ -207,11 +216,11 @@ def backtest_ensemble(adv_df, features, include_prophet=HAS_PROPHET, include_lst
                 preds_price = []
                 test_base_dates = adv_df.index[split:split+len(X_test)]
                 for t in test_base_dates:
-                    target_date = (pd.to_datetime(t) + pd.Timedelta(days=FORECAST_DAYS)).normalize()
+                    # CORRIGIDO: Usa BDay (Business Day) em vez de Timedelta
+                    target_date = (pd.to_datetime(t) + BDay(FORECAST_DAYS)).normalize()
                     df_pred = pd.DataFrame({'ds': [target_date]})
                     df_pred['ds'] = pd.to_datetime(df_pred['ds'])
                     fc = m.predict(df_pred)
-                    # safe extraction
                     pred_price = float(fc['yhat'].iloc[0]) if 'yhat' in fc.columns and not fc['yhat'].isna().all() else float(train_close['y'].iloc[-1])
                     preds_price.append(pred_price)
                 preds_price = np.array(preds_price)
@@ -234,6 +243,7 @@ def backtest_ensemble(adv_df, features, include_prophet=HAS_PROPHET, include_lst
     if include_lstm:
         if HAS_TF:
             try:
+                # (Código LSTM permanece o mesmo)
                 X_train_seq = X_train_s.reshape((X_train_s.shape[0], 1, X_train_s.shape[1]))
                 X_test_seq = X_test_s.reshape((X_test_s.shape[0], 1, X_test_s.shape[1]))
                 model = Sequential()
@@ -259,7 +269,7 @@ def backtest_ensemble(adv_df, features, include_prophet=HAS_PROPHET, include_lst
         done += 1
         if progress_callback: progress_callback(done / total)
 
-    # Ensemble predicted price: mean across models' predicted prices
+    # Ensemble
     pred_price_matrix = np.vstack([v['pred_price'] for v in trained.values()])
     pred_price_matrix = np.where(np.isfinite(pred_price_matrix), pred_price_matrix, np.nan)
     with np.errstate(all='ignore'):
@@ -270,14 +280,29 @@ def backtest_ensemble(adv_df, features, include_prophet=HAS_PROPHET, include_lst
     hit_ens = compute_return_hitrate(y_test_ret.values, ensemble_ret)
     results['Ensemble'] = {'price': price_metrics_ens, 'hitrate': hit_ens}
 
+    # --- NOVO: Feature Importance ---
+    feature_importance_df = None
+    if trained_rf_model is not None:
+        importances = trained_rf_model.feature_importances_
+        feature_importance_df = pd.DataFrame({
+            'Feature': features,
+            'Importance': importances
+        }).sort_values(by='Importance', ascending=False).reset_index(drop=True)
+
     df_plot = pd.DataFrame({
         'Data': adv_df.index[split:split+len(X_test)],
         'RealPrice': np.array(y_test_price.values, dtype=float),
         'PredPrice': ensemble_price
     })
-    df_plot['RealPrice'] = df_plot['RealPrice'].round(2)
-    df_plot['PredPrice'] = np.round(df_plot['PredPrice'].astype(float), 2)
-    return {'results': results, 'trained': trained, 'df_plot': df_plot, 'ensemble_ret': ensemble_ret}
+    
+    return {
+        'results': results,
+        'trained': trained,
+        'df_plot': df_plot,
+        'ensemble_ret': ensemble_ret,
+        'y_test_ret': y_test_ret.values, # Retorna os retornos reais para simulação
+        'feature_importance_df': feature_importance_df # Retorna o df de importâncias
+    }
 
 def confidence_from_price_mape(mape):
     if mape is None: return 0.0, "BAIXA CONFIANÇA", "#E74C3C"
@@ -286,14 +311,13 @@ def confidence_from_price_mape(mape):
     if mape < 0.10: return conf_pct, "MÉDIA CONFIANÇA", "#F1C40F"
     return conf_pct, "BAIXA CONFIANÇA", "#E74C3C"
 
-# --- Main flow
+# --- Main flow ---
 tickers_df = get_tickers_from_csv()
 selected_display = st.sidebar.selectbox('Escolha a Ação', tickers_df['display'])
 ticker_symbol = tickers_df[tickers_df['display'] == selected_display]['ticker'].iloc[0]
 company_name = tickers_df[tickers_df['display'] == selected_display]['nome'].iloc[0]
 ticker = f"{ticker_symbol}.SA"
 
-# clear analyses when ticker changes
 if 'last_ticker' not in st.session_state:
     st.session_state['last_ticker'] = ticker_symbol
 else:
@@ -323,11 +347,12 @@ c3.metric("💰 Último Preço", f"R$ {last_price:.2f}")
 c4.metric("📊 Variação (Dia)", f"{price_change:+.2f} R$", f"{percent_change:+.2f}%")
 st.markdown("---")
 
-# Initial charts
+# Abas de Análise Descritiva
 tab1, tab2, tab3 = st.tabs(["Preço e Indicadores", "Volatilidade", "Comparativo com IBOVESPA"])
 view_slice = slice(-viz_days, None) if viz_days is not None else slice(None)
 
 with tab1:
+    # (Código da Tab1 permanece o mesmo)
     st.subheader('Preço, Médias Móveis e Bandas de Bollinger')
     if len(data) < MIN_DAYS_CHARTS:
         st.warning(f"Dados insuficientes para gráficos históricos (mínimo {MIN_DAYS_CHARTS} dias). Histórico: {len(data)} dias.")
@@ -346,6 +371,7 @@ with tab1:
         st.plotly_chart(fig_rsi, use_container_width=True)
 
 with tab2:
+    # (Código da Tab2 permanece o mesmo)
     st.subheader('Volatilidade (janela de 30 dias)')
     if len(data) < MIN_DAYS_CHARTS:
         st.info("Volatilidade não disponível por dados históricos insuficientes.")
@@ -359,6 +385,7 @@ with tab2:
         st.markdown(f"<div style='background:#0b1220;padding:8px;border-radius:6px'><span style='color:{vol_color};font-size:18px;font-weight:700'>{vol_label}</span>  <span style='color:#ddd;margin-left:12px;font-size:16px'>Volatilidade atual: <strong>{current_vol:.4f}</strong></span></div>", unsafe_allow_html=True)
 
 with tab3:
+    # (Código da Tab3 permanece o mesmo)
     st.subheader('Comparativo com IBOVESPA')
     if len(data) < MIN_DAYS_CHARTS or ibov.empty:
         st.info("Comparador IBOVESPA indisponível por dados insuficientes.")
@@ -376,204 +403,128 @@ with tab3:
 
 st.markdown("---")
 
-# Simple volatility
-st.subheader('🧠 Volatilidade — Modelo Simples (RandomForest)')
-if st.button('Executar Previsão de Volatilidade (Simples)', key='vol_simple'):
-    df_vol = data[['Volatility']].copy().dropna()
-    if len(df_vol) < 30:
-        st.warning("Dados insuficientes (mínimo 30 dias).")
-    else:
-        for lag in range(1,6): df_vol[f'vol_lag_{lag}'] = df_vol['Volatility'].shift(lag)
-        df_vol.dropna(inplace=True)
-        Xv = df_vol.drop('Volatility', axis=1); yv = df_vol['Volatility']
-        model_vol = RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
-        model_vol.fit(Xv, yv)
-        pred_vol = float(model_vol.predict(Xv.iloc[-1:].values)[0])
-        next_day = (pd.to_datetime(data.index[-1]) + BDay(1)).strftime('%d/%m/%Y')
-        st.session_state['vol_result'] = {'timestamp': pd.Timestamp.now().isoformat(), 'ticker': ticker_symbol, 'pred_vol': pred_vol, 'date': next_day}
-if st.session_state.get('vol_result') is not None:
-    vol = st.session_state['vol_result']; v = vol['pred_vol']
-    if v >= 0.5: label, color = "ALTA VOLATILIDADE", "#E74C3C"
-    elif v >= 0.25: label, color = "VOLATILIDADE MÉDIA", "#F1C40F"
-    else: label, color = "BAIXA VOLATILIDADE", "#2ECC71"
-    st.markdown(f"<div style='background:#0b1220;padding:10px;border-radius:8px;display:flex;gap:16px;align-items:center'><div style='font-size:20px;color:{color};font-weight:800'>{label}</div><div style='color:#ddd;font-size:18px'>Data prevista: <strong>{vol['date']}</strong></div><div style='color:#ddd;font-size:18px'>Valor previsto: <strong>{v:.4f}</strong></div></div>", unsafe_allow_html=True)
-    mem = io.BytesIO()
-    with zipfile.ZipFile(mem, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr('volatility.json', json.dumps(vol)); zf.writestr('meta.txt', f"Ticker:{vol['ticker']}\nExport:{vol['timestamp']}\n")
-    mem.seek(0)
-    st.download_button("Exportar Volatilidade (ZIP)", mem.getvalue(), file_name=f"volatility_{ticker_symbol}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.zip", mime="application/zip")
-
-st.markdown("---")
-
-# Advanced
-st.subheader('🔮 Previsão de Preço Avançada (Ensemble + Backtest)')
+# Análise Avançada
+st.subheader('🔮 Previsão Avançada e Análise de Performance')
 st.write(f"Requer mínimo {MIN_DAYS_ADVANCED} dias de histórico para rodar. Usa Prophet/LSTM se disponíveis.")
 
 if st.button('Executar Previsão Avançada', key='run_advanced'):
     adv_df, used_features = prepare_advanced_features(data, forecast_days=FORECAST_DAYS)
     dias_utilizados = len(adv_df)
-    st.markdown(f"<div style='background:#0b1220;padding:10px;border-radius:8px'><span style='color:#fff;font-weight:700'>Dias solicitados:</span> <span style='color:#ddd;margin-left:8px'>{pd.to_datetime(start_date).strftime('%d/%m/%Y')} — {pd.to_datetime(end_date).strftime('%d/%m/%Y')} (<strong style='color:#fff'>{dias_utilizados} dias usados</strong>)</span></div>", unsafe_allow_html=True)
-
+    
     if dias_utilizados < MIN_DAYS_ADVANCED:
         st.warning(f"Dados insuficientes para análise avançada. Linhas válidas: {dias_utilizados}. Mínimo: {MIN_DAYS_ADVANCED}.")
     else:
-        progress_bar = st.progress(0)
-        def prog(p): progress_bar.progress(min(100, int(p*100)))
+        st.info(f"Utilizando {dias_utilizados} dias de dados para a análise (após limpeza e preparação).")
+        progress_bar = st.progress(0, text="Iniciando backtest...")
+        def prog(p): progress_bar.progress(min(1.0, p), text=f"Treinando modelos... {int(p*100)}%")
+        
         with st.spinner("Executando backtest (80/20) e treinando modelos..."):
             bt = backtest_ensemble(adv_df, used_features, include_prophet=True, include_lstm=True, progress_callback=prog)
+        progress_bar.progress(1.0, text="Análise completa!")
 
-        metrics = bt['results']
-        rows = []
-        for k, v in metrics.items():
-            if 'error' in v:
-                rows.append({'Modelo': k, 'MAE (R$)': None, 'RMSE (R$)': None, 'MAPE (%)': None, 'HitRate': None, 'Erro': v.get('error')})
-            else:
-                price = v.get('price', {})
-                mae = price.get('MAE'); rmse = price.get('RMSE'); mape = price.get('MAPE')
-                hit = v.get('hitrate')
-                rows.append({'Modelo': k, 'MAE (R$)': mae, 'RMSE (R$)': rmse, 'MAPE (%)': (mape * 100 if mape is not None else None), 'HitRate': (hit if hit is not None else None), 'Erro': None})
-        metrics_df = pd.DataFrame(rows)
+        st.session_state['advanced_result'] = bt # Salva todos os resultados
 
-        # Render styled dataframe safely: do NOT fillna before formatting; use na_rep
-        sty = metrics_df.style.format({
-            'MAE (R$)': lambda v: f"R$ {v:,.2f}" if pd.notna(v) else "N/A",
-            'RMSE (R$)': lambda v: f"R$ {v:,.2f}" if pd.notna(v) else "N/A",
-            'MAPE (%)': lambda v: f"{v:.2f}%" if pd.notna(v) else "N/A",
-            'HitRate': lambda v: f"{v:.2%}" if pd.notna(v) else "N/A",
-            'Erro': lambda v: v if pd.notna(v) else ""
-        }).format(na_rep="N/A")
-        st.subheader("Backtest (80% treino / 20% teste) — métricas (preço)")
-        st.dataframe(sty, use_container_width=True)
-
-        # ensemble confidence from price MAPE
-        ensemble_price_metrics = metrics.get('Ensemble', {}).get('price', {})
-        ensemble_mape = ensemble_price_metrics.get('MAPE', None)
-        conf_pct, conf_label, conf_color = confidence_from_price_mape(ensemble_mape)
-        st.markdown(f"<div style='background:#0b1220;padding:8px;border-radius:8px'><span style='color:#ddd;font-size:16px;font-weight:700'>Confiança (1 − MAPE_preço):</span> <span style='color:{conf_color};font-size:20px;font-weight:900;margin-left:12px'>{conf_label} ({conf_pct:.1f}%)</span></div>", unsafe_allow_html=True)
-
-        # Final predictions
-        trained = bt['trained']
-        per_model_latest_ret = {}
-        for name, info in trained.items():
-            preds_ret = info.get('pred_ret', None)
-            if preds_ret is None or len(preds_ret) == 0:
-                per_model_latest_ret[name] = float('nan')
-            else:
-                val = preds_ret[-1]
-                per_model_latest_ret[name] = float(val) if isfinite(val) else float('nan')
-        valid_vals = np.array([v for v in per_model_latest_ret.values() if np.isfinite(v)], dtype=float)
-        ensemble_future_ret = float(np.mean(valid_vals)) if valid_vals.size > 0 else 0.0
-        ensemble_future_ret = float(np.clip(ensemble_future_ret, -0.5, 0.5))
-        daily_rate = (1 + ensemble_future_ret) ** (1/FORECAST_DAYS) - 1
-        current_price = float(data['Close'].iloc[-1])
-        current_date = pd.to_datetime(data.index[-1])
-        preds_display = []
-        tmp = current_price
-        for d in range(1, FORECAST_DAYS+1):
-            tmp *= (1 + daily_rate)
-            preds_display.append({'Dias': d, 'Data': (current_date + BDay(d)).strftime('%d/%m/%Y'), 'Preço Previsto': round(tmp, 2), 'Variação': round(tmp/current_price - 1, 4)})
-        preds_df = pd.DataFrame(preds_display)
-
-        st.subheader("Projeção de Preço para os Próximos 5 Dias (baseado na última data disponível)")
-        st.markdown("<div style='background:#071626;padding:12px;border-radius:10px'>", unsafe_allow_html=True)
-        for r in preds_df.to_dict(orient='records'):
-            st.markdown(f"<div style='display:flex;justify-content:space-between;align-items:center;padding:8px 6px;border-radius:6px;margin-bottom:6px'><div style='color:#ddd;font-size:16px'>{r['Data']}</div><div style='color:#00BFFF;font-size:28px;font-weight:900'>R$ {r['Preço Previsto']:,.2f}</div><div style='color:#ddd;font-size:16px'>{r['Variação']:+.2%}</div></div>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        # Backtest plot
-        df_plot = bt['df_plot'].copy()
-        df_plot['Data'] = pd.to_datetime(df_plot['Data'])
-        fig_bt = go.Figure()
-        fig_bt.add_trace(go.Scatter(x=df_plot['Data'], y=df_plot['RealPrice'], name='Preço Real (t+5)', line=dict(color='blue')))
-        fig_bt.add_trace(go.Scatter(x=df_plot['Data'], y=df_plot['PredPrice'], name='Preço Previsto (Ensemble)', line=dict(color='red', dash='dash')))
-        fig_bt.update_layout(title='Backtest: Preço Real vs Preço Previsto (Período de Teste)', xaxis_title='Data', yaxis_title='Preço (R$)')
-        st.subheader("Backtest: Preço Real vs Preço Previsto (linhas)")
-        st.plotly_chart(fig_bt, use_container_width=True)
-
-        # Export
-        adv_result = {
-            'timestamp': pd.Timestamp.now().isoformat(),
-            'ticker': ticker_symbol,
-            'data_used_period': f"{pd.to_datetime(start_date).strftime('%d/%m/%Y')} — {pd.to_datetime(end_date).strftime('%d/%m/%Y')}",
-            'rows_used': int(dias_utilizados),
-            'features_used': used_features,
-            'backtest_metrics': metrics,
-            'per_model_latest_ret': per_model_latest_ret,
-            'ensemble_future_ret': ensemble_future_ret,
-            'predictions_df': preds_df.to_dict(orient='records'),
-            'confidence_pct': conf_pct
-        }
-        st.session_state['advanced_result'] = adv_result
-        mem = io.BytesIO()
-        with zipfile.ZipFile(mem, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr('predictions.csv', pd.DataFrame(preds_df).to_csv(index=False))
-            zf.writestr('metadata.json', json.dumps(adv_result))
-        mem.seek(0)
-        st.download_button("Exportar Previsão Avançada (ZIP)", mem.getvalue(), file_name=f"analise_avancada_{ticker_symbol}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.zip", mime="application/zip")
-
-st.markdown("---")
-
-# Import & compare
-st.subheader("📂 Importar e Comparar Previsões Exportadas")
-uploaded = st.file_uploader("Carregar ZIP de análise exportada por esta ferramenta", type=["zip"])
-if uploaded is not None:
-    try:
-        z = zipfile.ZipFile(io.BytesIO(uploaded.read()))
-        if 'predictions.csv' in z.namelist():
-            preds = pd.read_csv(io.BytesIO(z.read('predictions.csv')), dtype=str)
-            preds['Data'] = pd.to_datetime(preds['Data'], dayfirst=True, errors='coerce')
-            preds_display = preds.copy(); preds_display['Data'] = preds_display['Data'].dt.strftime('%d/%m/%Y')
-            st.write("Predições importadas:")
-            st.dataframe(preds_display, use_container_width=True)
-            if st.button("Comparar com preços reais (Yahoo Finance)"):
-                min_date = preds['Data'].min(); max_date = preds['Data'].max()
-                df_actual = yf.download(f"{preds['Ticker'].iloc[0]}.SA", start=(min_date - pd.Timedelta(days=3)).strftime('%Y-%m-%d'), end=(max_date + pd.Timedelta(days=3)).strftime('%Y-%m-%d'), progress=False)
-                if df_actual.empty: st.error("Não foi possível baixar preços reais para as datas requeridas.")
-                else:
-                    df_actual.index = pd.to_datetime(df_actual.index).normalize()
-                    rows = []
-                    for _, row in preds.iterrows():
-                        pred_date = row['Data'].normalize()
-                        actual_price = None
-                        if pred_date in df_actual.index:
-                            actual_price = float(df_actual.loc[pred_date,'Close'])
-                        else:
-                            for k in range(1,6):
-                                try_date = (pred_date + pd.Timedelta(days=k))
-                                if try_date in df_actual.index:
-                                    actual_price = float(df_actual.loc[try_date,'Close']); break
-                        rows.append({'Data Prevista':pred_date.strftime('%d/%m/%Y'),'Preço Previsto':float(row['Preço Previsto']),'Preço Real (fechamento próximo disponível)':actual_price})
-                    comp = pd.DataFrame(rows)
-                    comp['Erro Abs'] = comp.apply(lambda r: None if pd.isna(r['Preço Real (fechamento próximo disponível)']) else abs(r['Preço Real (fechamento próximo disponível)'] - r['Preço Previsto']), axis=1)
-                    comp['Erro %'] = comp.apply(lambda r: None if pd.isna(r['Preço Real (fechamento próximo disponível)']) else (r['Preço Real (fechamento próximo disponível)'] / r['Preço Previsto'] - 1), axis=1)
-                    st.subheader("Comparação Previsto x Real")
-                    st.dataframe(comp.style.format({'Preço Previsto':'R$ {:.2f}','Preço Real (fechamento próximo disponível)':'R$ {:.2f}','Erro Abs':'R$ {:.2f}','Erro %':'{:+.2%}'}), use_container_width=True)
-        elif 'volatility.json' in z.namelist():
-            vol = json.loads(z.read('volatility.json'))
-            st.write("Arquivo de Volatilidade importado:")
-            st.json(vol)
-            if st.button("Comparar Volatilidade importada com valor real (Yahoo)"):
-                try:
-                    date_to_check = pd.to_datetime(vol['date'], dayfirst=True)
-                    hist = yf.download(f"{vol['ticker']}.SA", start=(date_to_check - pd.Timedelta(days=60)).strftime('%Y-%m-%d'), end=(date_to_check + pd.Timedelta(days=3)).strftime('%Y-%m-%d'), progress=False)
-                    if hist.empty: st.error("Não foi possível baixar histórico para cálculo da volatilidade real.")
-                    else:
-                        hist['Daily Return'] = hist['Close'].pct_change()
-                        real_vol = hist['Daily Return'].rolling(window=30, min_periods=1).std().iloc[-1] * (252**0.5)
-                        st.write(f"Volatilidade real aproximada (janela 30d) na data mais próxima: {real_vol:.4f}")
-                        st.write(f"Previsto: {vol['pred_vol']:.4f}")
-                        st.write(f"Erro absoluto: {abs(real_vol - vol['pred_vol']):.4f}")
-                except Exception as e:
-                    st.error(f"Erro ao comparar volatilidade: {e}")
+if 'advanced_result' in st.session_state and st.session_state['advanced_result'] is not None:
+    bt = st.session_state['advanced_result']
+    metrics = bt['results']
+    rows = []
+    for k, v in metrics.items():
+        if 'error' in v:
+            rows.append({'Modelo': k, 'MAE (R$)': None, 'RMSE (R$)': None, 'MAPE (%)': None, 'HitRate': None, 'Erro': v.get('error')})
         else:
-            st.error("ZIP inválido. Arquivo 'predictions.csv' ou 'volatility.json' não encontrado.")
-    except Exception as e:
-        st.error(f"Erro ao processar ZIP: {e}")
+            price = v.get('price', {})
+            mae = price.get('MAE'); rmse = price.get('RMSE'); mape = price.get('MAPE')
+            hit = v.get('hitrate')
+            # CORRIGIDO: Usa string vazia para sucesso na coluna de erro
+            rows.append({'Modelo': k, 'MAE (R$)': mae, 'RMSE (R$)': rmse, 'MAPE (%)': (mape * 100 if mape is not None else None), 'HitRate': (hit if hit is not None else None), 'Erro': ''})
+    metrics_df = pd.DataFrame(rows)
+
+    st.subheader("Resultados do Backtest (Período de Teste: 20% dos dados)")
+    sty = metrics_df.style.format({
+        'MAE (R$)': lambda v: f"R$ {v:,.2f}" if pd.notna(v) else "N/A",
+        'RMSE (R$)': lambda v: f"R$ {v:,.2f}" if pd.notna(v) else "N/A",
+        'MAPE (%)': lambda v: f"{v:.2f}%" if pd.notna(v) else "N/A",
+        'HitRate': lambda v: f"{v:.2%}" if pd.notna(v) else "N/A",
+    }).format(na_rep="N/A")
+    st.dataframe(sty, use_container_width=True)
+
+    ensemble_price_metrics = metrics.get('Ensemble', {}).get('price', {})
+    ensemble_mape = ensemble_price_metrics.get('MAPE', None)
+    conf_pct, conf_label, conf_color = confidence_from_price_mape(ensemble_mape)
+    st.markdown(f"<div style='background:#0b1220;padding:8px;border-radius:8px'><span style='color:#ddd;font-size:16px;font-weight:700'>Confiança (1 − MAPE_preço):</span> <span style='color:{conf_color};font-size:20px;font-weight:900;margin-left:12px'>{conf_label} ({conf_pct:.1f}%)</span></div>", unsafe_allow_html=True)
+    st.markdown("---")
+
+    # --- NOVO: PILAR 1 - FEATURE IMPORTANCE ---
+    with st.expander("🔍 Drivers do Modelo (Feature Importance)"):
+        st.info("Este gráfico mostra quais variáveis (features) o modelo Random Forest considerou mais importantes para fazer suas previsões. Valores altos indicam maior poder preditivo.")
+        feature_df = bt.get('feature_importance_df')
+        if feature_df is not None:
+            fig_fi = px.bar(feature_df.head(15), x='Importance', y='Feature', orientation='h', title='Top 15 Features Mais Importantes')
+            fig_fi.update_layout(yaxis={'categoryorder':'total ascending'})
+            st.plotly_chart(fig_fi, use_container_width=True)
+        else:
+            st.warning("Não foi possível gerar a importância das features.")
+
+    # --- NOVO: PILAR 3 - SIMULAÇÃO DE RENTABILIDADE ---
+    with st.expander("💰 Simulação de Estratégia (Backtest de Rentabilidade)"):
+        st.info("Este gráfico simula o retorno de um capital inicial de R$ 10.000 no período de teste, comparando duas estratégias: 'Comprar e Segurar' (Buy & Hold) vs. a estratégia do nosso modelo (comprar o ativo apenas se a previsão de retorno for positiva).")
+        
+        pred_returns = bt['ensemble_ret']
+        real_returns = bt['y_test_ret']
+        dates = bt['df_plot']['Data']
+
+        # Estratégia do Modelo: só se expõe ao retorno real se a previsão for positiva
+        strategy_daily_returns = np.where(pred_returns > 0, real_returns, 0)
+        
+        # Calcular retornos acumulados
+        initial_capital = 10000
+        strategy_cumulative = (1 + strategy_daily_returns).cumprod() * initial_capital
+        buy_hold_cumulative = (1 + real_returns).cumprod() * initial_capital
+
+        plot_df = pd.DataFrame({
+            'Data': dates,
+            'Estratégia do Modelo': strategy_cumulative,
+            'Comprar e Segurar (Buy & Hold)': buy_hold_cumulative
+        })
+
+        fig_sim = go.Figure()
+        fig_sim.add_trace(go.Scatter(x=plot_df['Data'], y=plot_df['Estratégia do Modelo'], name='Estratégia do Modelo', line=dict(color='cyan')))
+        fig_sim.add_trace(go.Scatter(x=plot_df['Data'], y=plot_df['Comprar e Segurar (Buy & Hold)'], name='Buy & Hold', line=dict(color='gray', dash='dash')))
+        fig_sim.update_layout(title='Evolução do Capital (R$)', xaxis_title='Data', yaxis_title='Capital (R$)')
+        st.plotly_chart(fig_sim, use_container_width=True)
+
+
+    # Final predictions
+    st.subheader("Projeção de Preço para os Próximos 5 Dias")
+    st.caption("Baseado na média de todos os modelos, usando a última data disponível como ponto de partida.")
+    
+    trained = bt['trained']
+    per_model_latest_ret = {}
+    for name, info in trained.items():
+        preds_ret = info.get('pred_ret', [])
+        if len(preds_ret) > 0 and np.isfinite(preds_ret[-1]):
+            per_model_latest_ret[name] = float(preds_ret[-1])
+    
+    valid_vals = np.array(list(per_model_latest_ret.values()), dtype=float)
+    ensemble_future_ret = float(np.mean(valid_vals)) if valid_vals.size > 0 else 0.0
+    ensemble_future_ret = float(np.clip(ensemble_future_ret, -0.5, 0.5))
+    daily_rate = (1 + ensemble_future_ret) ** (1/FORECAST_DAYS) - 1
+    
+    current_price = float(data['Close'].iloc[-1])
+    current_date = pd.to_datetime(data.index[-1])
+    preds_display = []
+    tmp = current_price
+    for d in range(1, FORECAST_DAYS+1):
+        tmp *= (1 + daily_rate)
+        preds_display.append({'Dias': d, 'Data': (current_date + BDay(d)).strftime('%d/%m/%Y'), 'Preço Previsto': round(tmp, 2), 'Variação': round(tmp/current_price - 1, 4)})
+    preds_df = pd.DataFrame(preds_display)
+
+    for r in preds_df.to_dict(orient='records'):
+        var_color = "#2ECC71" if r['Variação'] > 0 else "#E74C3C"
+        st.markdown(f"<div style='display:flex;justify-content:space-between;align-items:center;padding:8px 6px;border-radius:6px;margin-bottom:6px;background:#0b1220'><div style='color:#ddd;font-size:16px'>{r['Data']}</div><div style='color:#00BFFF;font-size:28px;font-weight:900'>R$ {r['Preço Previsto']:,.2f}</div><div style='color:{var_color};font-size:16px'>{r['Variação']:+.2%}</div></div>", unsafe_allow_html=True)
 
 # footer
 last_update = pd.to_datetime(data.index[-1]).strftime('%d/%m/%Y')
 st.markdown("---")
 st.caption(f"Última atualização dos preços: **{last_update}** — Dados: Yahoo Finance.")
 st.markdown("<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)
-
-

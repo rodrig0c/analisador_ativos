@@ -441,7 +441,7 @@ if st.button('Executar Previsão Avançada', key='run_advanced'):
             'MAPE (%)': lambda v: f"{v:.2f}%" if pd.notna(v) else "N/A",
             'HitRate': lambda v: f"{v:.2%}" if pd.notna(v) else "N/A",
             'Erro': lambda v: v if pd.notna(v) else ""
-        }).na_rep("N/A")
+        }).format(na_rep="N/A")
         st.subheader("Backtest (80% treino / 20% teste) — métricas (preço)")
         st.dataframe(sty, use_container_width=True)
 

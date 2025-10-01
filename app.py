@@ -1,8 +1,7 @@
 # app.py
-# Analisador com ensemble (RandomForest, Prophet, LSTM quando disponível),
-# backtest com linhas (preço real x preço previsto), Prophet fix (ds,y),
-# arredondamento 2 casas decimais, confiança = (1 - MAPE)*100,
-# mínimo 180 dias para análise avançada, e layout não destrutivo.
+# Corrigido: Prophet (ds,y), métricas baseadas em PREÇOS (MAPE estável),
+# ensemble (RF, GB, SVR, MLP) + Prophet + LSTM (se instalados),
+# backtest com linhas (preço real x previsto), arredondamento e formatação.
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -21,7 +20,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 warnings.filterwarnings('ignore')
-st.set_page_config(page_title="Analisador (Ensemble+Prophet+LSTM) — Backtest", layout="wide")
+st.set_page_config(page_title="Analisador (Corrigido: Prophet + Métricas preço)", layout="wide")
 
 # Optional libs
 HAS_PROPHET = False
@@ -41,8 +40,8 @@ except Exception:
     HAS_TF = False
 
 # UI
-st.title('📊 Analisador — Ensemble (RF + Prophet + LSTM) com Backtest')
-st.write('Datas em dd/mm/YYYY. Confiança = (1 − MAPE de backtest) × 100. Mínimo 180 dias para análise avançada.')
+st.title('📊 Analisador — Prophet corrigido + Backtest (linhas)')
+st.write('Todas as datas em dd/mm/YYYY. Confiança = (1 − MAPE_preço) × 100.')
 
 st.sidebar.header('⚙️ Parâmetros')
 start_default = date(2019, 1, 1)
@@ -56,7 +55,7 @@ MIN_DAYS_CHARTS = 60
 MIN_DAYS_ADVANCED = 180
 FORECAST_DAYS = 5
 
-# --- Helpers: load and indicators
+# --- Helpers
 @st.cache_data
 def get_tickers_from_csv():
     try:
@@ -112,7 +111,7 @@ def prepare_advanced_features(df, forecast_days=FORECAST_DAYS):
     d['price_vs_ma50'] = d['Close'] / d['MM_Longa'].replace(0, np.nan)
     d['ma_cross'] = (d['MM_Curta'] > d['MM_Longa']).astype(int)
     d['target_future_return'] = d['Close'].shift(-forecast_days) / d['Close'] - 1
-    d['target_future_price'] = d['Close'].shift(-forecast_days)  # real future price for backtest plotting
+    d['target_future_price'] = d['Close'].shift(-forecast_days)
     d['target_direction'] = (d['target_future_return'] > 0).astype(int)
     d.replace([np.inf,-np.inf], np.nan, inplace=True)
     potential = [c for c in d.columns if c.startswith(('return_','volume_ma_','high_','low_','volatility_','price_vs_','ma_cross'))]
@@ -122,7 +121,6 @@ def prepare_advanced_features(df, forecast_days=FORECAST_DAYS):
     d.dropna(subset=required, inplace=True)
     return d, features
 
-# Models
 def create_classic_models():
     return {
         'Random Forest': RandomForestRegressor(n_estimators=200, max_depth=12, random_state=42, n_jobs=-1),
@@ -131,27 +129,37 @@ def create_classic_models():
         'Neural Net': MLPRegressor(hidden_layer_sizes=(64,32), max_iter=1000, random_state=42)
     }
 
-# Metrics on returns
-def compute_metrics(y_true, y_pred):
-    mask = np.isfinite(y_pred)
+# Metrics: price-based MAPE stable (prices rarely near zero)
+def compute_price_metrics(y_true_price, y_pred_price):
+    y_t = np.array(y_true_price, dtype=float)
+    y_p = np.array(y_pred_price, dtype=float)
+    mask = np.isfinite(y_p) & np.isfinite(y_t)
     if mask.sum() == 0:
-        return {'MAE': None, 'RMSE': None, 'MAPE': None, 'HitRate': None}
-    y_t = np.array(y_true)[mask]
-    y_p = np.array(y_pred)[mask]
-    mae = float(mean_absolute_error(y_t, y_p))
-    rmse = float(np.sqrt(mean_squared_error(y_t, y_p)))
-    denom = np.where(np.abs(y_t) < 1e-8, 1e-8, np.abs(y_t))
-    mape = float(np.mean(np.abs((y_t - y_p) / denom)))
-    hit = float(np.mean((np.sign(y_t) == np.sign(y_p)).astype(float)))
-    return {'MAE': mae, 'RMSE': rmse, 'MAPE': mape, 'HitRate': hit}
+        return {'MAE': None, 'RMSE': None, 'MAPE': None}
+    y_t_m = y_t[mask]
+    y_p_m = y_p[mask]
+    mae = float(mean_absolute_error(y_t_m, y_p_m))
+    rmse = float(np.sqrt(mean_squared_error(y_t_m, y_p_m)))
+    denom = np.where(np.abs(y_t_m) < 1e-6, 1e-6, np.abs(y_t_m))
+    mape = float(np.mean(np.abs((y_t_m - y_p_m) / denom)))
+    return {'MAE': mae, 'RMSE': rmse, 'MAPE': mape}
 
-# Backtest function: returns price series for real vs predicted (2 decimals)
+def compute_return_hitrate(y_true_ret, y_pred_ret):
+    y_t = np.array(y_true_ret, dtype=float)
+    y_p = np.array(y_pred_ret, dtype=float)
+    mask = np.isfinite(y_p) & np.isfinite(y_t)
+    if mask.sum() == 0:
+        return None
+    return float(np.mean((np.sign(y_t[mask]) == np.sign(y_p[mask])).astype(float)))
+
+# Backtest ensemble with price metrics and Prophet fixed
 def backtest_ensemble(adv_df, features, include_prophet=HAS_PROPHET, include_lstm=HAS_TF, progress_callback=None):
-    # 80/20 split
     X = adv_df[features]
     y_ret = adv_df['target_future_return']
     y_price = adv_df['target_future_price']
     split = int(len(X) * 0.8)
+    if split < 2:
+        raise ValueError("Período de treino insuficiente para backtest.")
     X_train, X_test = X.iloc[:split], X.iloc[split:]
     y_train_ret, y_test_ret = y_ret.iloc[:split], y_ret.iloc[split:]
     y_test_price = y_price.iloc[split:split+len(X_test)]
@@ -165,68 +173,64 @@ def backtest_ensemble(adv_df, features, include_prophet=HAS_PROPHET, include_lst
     total = len(models) + (1 if include_prophet else 0) + (1 if include_lstm else 0)
     done = 0
 
-    # Classic models predict returns on X_test
+    # classic models
     for name, model in models.items():
         try:
             model.fit(X_train_s, y_train_ret)
             preds_ret = model.predict(X_test_s)
-            # predicted prices for test set: base_price * (1 + pred_return)
             base_prices = adv_df['Close'].iloc[split:split+len(X_test)].values
             preds_price = (1 + preds_ret) * base_prices
+            price_metrics = compute_price_metrics(y_test_price.values, preds_price)
+            hit = compute_return_hitrate(y_test_ret.values, preds_ret)
+            results[name] = {'price': price_metrics, 'hitrate': hit}
             trained[name] = {'pred_ret': preds_ret, 'pred_price': preds_price}
-            results[name] = compute_metrics(y_test_ret.values, preds_ret)
         except Exception as e:
-            trained[name] = {'pred_ret': np.full(len(X_test), np.nan), 'pred_price': np.full(len(X_test), np.nan)}
             results[name] = {'error': str(e)}
+            trained[name] = {'pred_ret': np.full(len(X_test), np.nan), 'pred_price': np.full(len(X_test), np.nan)}
         done += 1
         if progress_callback: progress_callback(done / total)
 
-    # Prophet: train on historical Close (ds,y). produce predicted price for t+FORECAST_DAYS for each t in test set
+    # Prophet: train on Close -> safe ds,y creation and per-date predict
     if include_prophet:
         if HAS_PROPHET:
             try:
-                # build prophet train df ensuring 'ds' and 'y' and no NaN
-                train_df = adv_df[['Close']].iloc[:split].reset_index().rename(columns={'index':'ds','Close':'y'})
-                train_df['ds'] = pd.to_datetime(train_df['ds'])
-                train_df['y'] = pd.to_numeric(train_df['y'], errors='coerce')
-                train_df.dropna(inplace=True)
-                if train_df.empty:
-                    raise ValueError("Prophet: dados de treino insuficientes após limpeza.")
+                train_close = adv_df[['Close']].iloc[:split].reset_index().rename(columns={'index':'ds','Close':'y'})
+                train_close['ds'] = pd.to_datetime(train_close['ds'])
+                train_close['y'] = pd.to_numeric(train_close['y'], errors='coerce')
+                train_close.dropna(inplace=True)
+                if train_close.empty:
+                    raise ValueError("Dados Prophet vazios após limpeza.")
                 m = Prophet()
-                m.fit(train_df)
-                # create future dataframe covering all needed forecast target dates
-                test_base_dates = adv_df.index[split:split+len(X_test)]
-                needed_dates = [ (pd.to_datetime(t) + pd.Timedelta(days=FORECAST_DAYS)).normalize() for t in test_base_dates ]
-                last_needed = max(needed_dates)
-                # make future up to last_needed (daily)
-                periods = (last_needed - train_df['ds'].max()).days + 5
-                future = m.make_future_dataframe(periods=max(0, periods), freq='D')
-                fcst = m.predict(future).set_index('ds')
+                m.fit(train_close)
                 preds_price = []
+                test_base_dates = adv_df.index[split:split+len(X_test)]
                 for t in test_base_dates:
                     target_date = (pd.to_datetime(t) + pd.Timedelta(days=FORECAST_DAYS)).normalize()
-                    if target_date in fcst.index:
-                        pred_price = float(fcst.loc[target_date, 'yhat'])
+                    df_pred = pd.DataFrame({'ds': [target_date]})
+                    df_pred['ds'] = pd.to_datetime(df_pred['ds'])
+                    fc = m.predict(df_pred)
+                    if 'yhat' in fc.columns and not fc['yhat'].isna().all():
+                        pred_price = float(fc['yhat'].iloc[0])
                     else:
-                        # fallback to nearest available
-                        pred_price = float(fcst['yhat'].iloc[-1])
+                        pred_price = float(train_close['y'].iloc[-1])
                     preds_price.append(pred_price)
                 preds_price = np.array(preds_price)
-                # compute implied returns relative to base price
                 base_prices = adv_df['Close'].iloc[split:split+len(X_test)].values
                 preds_ret = preds_price / base_prices - 1
+                price_metrics = compute_price_metrics(y_test_price.values, preds_price)
+                hit = compute_return_hitrate(y_test_ret.values, preds_ret)
+                results['Prophet'] = {'price': price_metrics, 'hitrate': hit}
                 trained['Prophet'] = {'pred_ret': preds_ret, 'pred_price': preds_price}
-                results['Prophet'] = compute_metrics(y_test_ret.values, preds_ret)
             except Exception as e:
-                trained['Prophet'] = {'pred_ret': np.full(len(X_test), np.nan), 'pred_price': np.full(len(X_test), np.nan)}
                 results['Prophet'] = {'error': f"Prophet error: {e}"}
+                trained['Prophet'] = {'pred_ret': np.full(len(X_test), np.nan), 'pred_price': np.full(len(X_test), np.nan)}
         else:
-            trained['Prophet'] = {'pred_ret': np.full(len(X_test), np.nan), 'pred_price': np.full(len(X_test), np.nan)}
             results['Prophet'] = {'error': 'Prophet não instalado'}
+            trained['Prophet'] = {'pred_ret': np.full(len(X_test), np.nan), 'pred_price': np.full(len(X_test), np.nan)}
         done += 1
         if progress_callback: progress_callback(done / total)
 
-    # LSTM optional: simple sequence model on scaled features
+    # LSTM optional
     if include_lstm:
         if HAS_TF:
             try:
@@ -242,53 +246,56 @@ def backtest_ensemble(adv_df, features, include_prophet=HAS_PROPHET, include_lst
                 preds_ret = model.predict(X_test_seq).flatten()
                 base_prices = adv_df['Close'].iloc[split:split+len(X_test)].values
                 preds_price = (1 + preds_ret) * base_prices
+                price_metrics = compute_price_metrics(y_test_price.values, preds_price)
+                hit = compute_return_hitrate(y_test_ret.values, preds_ret)
+                results['LSTM'] = {'price': price_metrics, 'hitrate': hit}
                 trained['LSTM'] = {'pred_ret': preds_ret, 'pred_price': preds_price}
-                results['LSTM'] = compute_metrics(y_test_ret.values, preds_ret)
             except Exception as e:
-                trained['LSTM'] = {'pred_ret': np.full(len(X_test), np.nan), 'pred_price': np.full(len(X_test), np.nan)}
                 results['LSTM'] = {'error': f"LSTM error: {e}"}
+                trained['LSTM'] = {'pred_ret': np.full(len(X_test), np.nan), 'pred_price': np.full(len(X_test), np.nan)}
         else:
-            trained['LSTM'] = {'pred_ret': np.full(len(X_test), np.nan), 'pred_price': np.full(len(X_test), np.nan)}
             results['LSTM'] = {'error': 'TensorFlow não instalado'}
+            trained['LSTM'] = {'pred_ret': np.full(len(X_test), np.nan), 'pred_price': np.full(len(X_test), np.nan)}
         done += 1
         if progress_callback: progress_callback(done / total)
 
-    # Build ensemble predicted price as mean across available predicted prices (ignore NaN)
+    # Ensemble predicted price: mean across model predicted prices
     pred_price_matrix = np.vstack([v['pred_price'] for v in trained.values()])
     pred_price_matrix = np.where(np.isfinite(pred_price_matrix), pred_price_matrix, np.nan)
     ensemble_price = np.nanmean(pred_price_matrix, axis=0)
-    # compute ensemble implied returns vs real return for test set
+    # compute ensemble price metrics vs real price
+    price_metrics_ens = compute_price_metrics(y_test_price.values, ensemble_price)
+    # compute ensemble hits using returns derived from ensemble_price
     base_prices = adv_df['Close'].iloc[split:split+len(X_test)].values
     ensemble_ret = ensemble_price / base_prices - 1
-    results['Ensemble'] = compute_metrics(y_test_ret.values, ensemble_ret)
+    hit_ens = compute_return_hitrate(y_test_ret.values, ensemble_ret)
+    results['Ensemble'] = {'price': price_metrics_ens, 'hitrate': hit_ens}
 
-    # Prepare DataFrame for plotting: Date, RealPrice (target_future_price), PredictedPrice (ensemble)
+    # DataFrame for plotting: date, real_future_price, ensemble_pred_price (2 decimals)
     df_plot = pd.DataFrame({
         'Data': adv_df.index[split:split+len(X_test)],
-        'RealPrice': np.array(y_test_price, dtype=float),
+        'RealPrice': np.array(y_test_price.values, dtype=float),
         'PredPrice': ensemble_price
     })
-    # Round to 2 decimals for display
     df_plot['RealPrice'] = df_plot['RealPrice'].round(2)
     df_plot['PredPrice'] = np.round(df_plot['PredPrice'].astype(float), 2)
     return {'results': results, 'trained': trained, 'df_plot': df_plot, 'ensemble_ret': ensemble_ret}
 
-# Confidence helper
-def confidence_from_mape(mape):
+def confidence_from_price_mape(mape):
     if mape is None: return 0.0, "BAIXA CONFIANÇA", "#E74C3C"
     conf_pct = max(0.0, min(1.0, 1.0 - mape)) * 100.0
     if mape < 0.05: return conf_pct, "ALTA CONFIANÇA", "#2ECC71"
     if mape < 0.10: return conf_pct, "MÉDIA CONFIANÇA", "#F1C40F"
     return conf_pct, "BAIXA CONFIANÇA", "#E74C3C"
 
-# --- Main flow ---
+# --- Main flow
 tickers_df = get_tickers_from_csv()
 selected_display = st.sidebar.selectbox('Escolha a Ação', tickers_df['display'])
 ticker_symbol = tickers_df[tickers_df['display'] == selected_display]['ticker'].iloc[0]
 company_name = tickers_df[tickers_df['display'] == selected_display]['nome'].iloc[0]
 ticker = f"{ticker_symbol}.SA"
 
-# clear analyses when ticker changes
+# clear state on ticker change
 if 'last_ticker' not in st.session_state:
     st.session_state['last_ticker'] = ticker_symbol
 else:
@@ -318,12 +325,9 @@ c3.metric("💰 Último Preço", f"R$ {last_price:.2f}")
 c4.metric("📊 Variação (Dia)", f"{price_change:+.2f} R$", f"{percent_change:+.2f}%")
 st.markdown("---")
 
-# Initial charts (respect MIN_DAYS_CHARTS)
+# Initial charts
 tab1, tab2, tab3 = st.tabs(["Preço e Indicadores", "Volatilidade", "Comparativo com IBOVESPA"])
-if viz_days is None:
-    view_slice = slice(None)
-else:
-    view_slice = slice(-viz_days, None)
+view_slice = slice(-viz_days, None) if viz_days is not None else slice(None)
 
 with tab1:
     st.subheader('Preço, Médias Móveis e Bandas de Bollinger')
@@ -374,7 +378,7 @@ with tab3:
 
 st.markdown("---")
 
-# Simple volatility model (independent)
+# Simple volatility
 st.subheader('🧠 Volatilidade — Modelo Simples (RandomForest)')
 if st.button('Executar Previsão de Volatilidade (Simples)', key='vol_simple'):
     df_vol = data[['Volatility']].copy().dropna()
@@ -403,9 +407,9 @@ if st.session_state.get('vol_result') is not None:
 
 st.markdown("---")
 
-# Advanced ML + backtest
+# Advanced
 st.subheader('🔮 Previsão de Preço Avançada (Ensemble + Backtest)')
-st.write(f"Requer mínimo {MIN_DAYS_ADVANCED} dias de histórico para rodar. Prophet e LSTM serão usados se instalados no ambiente.")
+st.write(f"Requer mínimo {MIN_DAYS_ADVANCED} dias de histórico para rodar. Usa Prophet/LSTM se disponíveis.")
 
 if st.button('Executar Previsão Avançada', key='run_advanced'):
     adv_df, used_features = prepare_advanced_features(data, forecast_days=FORECAST_DAYS)
@@ -413,31 +417,36 @@ if st.button('Executar Previsão Avançada', key='run_advanced'):
     st.markdown(f"<div style='background:#0b1220;padding:10px;border-radius:8px'><span style='color:#fff;font-weight:700'>Dias solicitados:</span> <span style='color:#ddd;margin-left:8px'>{pd.to_datetime(start_date).strftime('%d/%m/%Y')} — {pd.to_datetime(end_date).strftime('%d/%m/%Y')} (<strong style='color:#fff'>{dias_utilizados} dias usados</strong>)</span></div>", unsafe_allow_html=True)
 
     if dias_utilizados < MIN_DAYS_ADVANCED:
-        st.warning(f"Dados insuficientes para análise avançada. Linhas válidas após limpeza: {dias_utilizados}. Mínimo requerido: {MIN_DAYS_ADVANCED}.")
+        st.warning(f"Dados insuficientes para análise avançada. Linhas válidas: {dias_utilizados}. Mínimo: {MIN_DAYS_ADVANCED}.")
     else:
         progress_bar = st.progress(0)
         def prog(p): progress_bar.progress(min(100, int(p*100)))
         with st.spinner("Executando backtest (80/20) e treinando modelos..."):
             bt = backtest_ensemble(adv_df, used_features, include_prophet=True, include_lstm=True, progress_callback=prog)
 
-        # Show backtest metrics table (MAPE etc.)
+        # format table with price metrics & hitrate
         metrics = bt['results']
         rows = []
         for k, v in metrics.items():
             if 'error' in v:
-                rows.append({'Modelo': k, 'MAE': None, 'RMSE': None, 'MAPE': None, 'HitRate': None, 'Erro': v.get('error')})
+                rows.append({'Modelo': k, 'MAE (R$)': None, 'RMSE (R$)': None, 'MAPE (%)': None, 'HitRate': None, 'Erro': v.get('error')})
             else:
-                rows.append({'Modelo': k, 'MAE': v['MAE'], 'RMSE': v['RMSE'], 'MAPE': v['MAPE'], 'HitRate': v['HitRate']})
+                price = v.get('price', {})
+                mae = price.get('MAE'); rmse = price.get('RMSE'); mape = price.get('MAPE')
+                hit = v.get('hitrate')
+                rows.append({'Modelo': k, 'MAE (R$)': mae, 'RMSE (R$)': rmse, 'MAPE (%)': (mape * 100 if mape is not None else None), 'HitRate': (hit if hit is not None else None), 'Erro': None})
         metrics_df = pd.DataFrame(rows)
-        st.subheader("Backtest (80% treino / 20% teste) — métricas (retornos)")
-        st.dataframe(metrics_df.fillna("N/A"), use_container_width=True)
+        # display with formatting
+        st.subheader("Backtest (80% treino / 20% teste) — métricas (preço)")
+        st.dataframe(metrics_df.fillna("N/A").style.format({'MAE (R$)': lambda v: f"R$ {v:,.2f}" if pd.notna(v) else "N/A", 'RMSE (R$)': lambda v: f"R$ {v:,.2f}" if pd.notna(v) else "N/A", 'MAPE (%)': lambda v: f"{v:.2f}%" if pd.notna(v) else "N/A", 'HitRate': lambda v: f"{v:.2%}" if pd.notna(v) else "N/A"}), use_container_width=True)
 
-        # Confidence from ensemble MAPE
-        ensemble_mape = metrics.get('Ensemble', {}).get('MAPE', None)
-        conf_pct, conf_label, conf_color = confidence_from_mape(ensemble_mape)
-        st.markdown(f"<div style='background:#0b1220;padding:8px;border-radius:8px'><span style='color:#ddd;font-size:16px;font-weight:700'>Confiança (1 − MAPE):</span> <span style='color:{conf_color};font-size:20px;font-weight:900;margin-left:12px'>{conf_label} ({conf_pct:.1f}%)</span></div>", unsafe_allow_html=True)
+        # ensemble confidence from price MAPE
+        ensemble_price_metrics = metrics.get('Ensemble', {}).get('price', {})
+        ensemble_mape = ensemble_price_metrics.get('MAPE', None)
+        conf_pct, conf_label, conf_color = confidence_from_price_mape(ensemble_mape)
+        st.markdown(f"<div style='background:#0b1220;padding:8px;border-radius:8px'><span style='color:#ddd;font-size:16px;font-weight:700'>Confiança (1 − MAPE_preço):</span> <span style='color:{conf_color};font-size:20px;font-weight:900;margin-left:12px'>{conf_label} ({conf_pct:.1f}%)</span></div>", unsafe_allow_html=True)
 
-        # Final predictions: use ensemble mean of last trained models' prediction on their test set last element as proxy
+        # Final predictions (use ensemble of models' latest test predictions as proxy)
         trained = bt['trained']
         per_model_latest_ret = {}
         for name, info in trained.items():
@@ -445,7 +454,8 @@ if st.button('Executar Previsão Avançada', key='run_advanced'):
             if preds_ret is None or len(preds_ret) == 0:
                 per_model_latest_ret[name] = float('nan')
             else:
-                per_model_latest_ret[name] = float(preds_ret[-1]) if isfinite(preds_ret[-1]) else float('nan')
+                val = preds_ret[-1]
+                per_model_latest_ret[name] = float(val) if isfinite(val) else float('nan')
         valid_vals = np.array([v for v in per_model_latest_ret.values() if np.isfinite(v)], dtype=float)
         ensemble_future_ret = float(np.mean(valid_vals)) if valid_vals.size > 0 else 0.0
         ensemble_future_ret = float(np.clip(ensemble_future_ret, -0.5, 0.5))
@@ -465,9 +475,8 @@ if st.button('Executar Previsão Avançada', key='run_advanced'):
             st.markdown(f"<div style='display:flex;justify-content:space-between;align-items:center;padding:8px 6px;border-radius:6px;margin-bottom:6px'><div style='color:#ddd;font-size:16px'>{r['Data']}</div><div style='color:#00BFFF;font-size:28px;font-weight:900'>R$ {r['Preço Previsto']:,.2f}</div><div style='color:#ddd;font-size:16px'>{r['Variação']:+.2%}</div></div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Backtest plot lines: real price (target_future_price) vs ensemble predicted price
+        # Backtest plot: real vs ensemble predicted prices (lines)
         df_plot = bt['df_plot'].copy()
-        # ensure dates are datetime
         df_plot['Data'] = pd.to_datetime(df_plot['Data'])
         fig_bt = go.Figure()
         fig_bt.add_trace(go.Scatter(x=df_plot['Data'], y=df_plot['RealPrice'], name='Preço Real (t+5)', line=dict(color='blue')))
@@ -476,7 +485,7 @@ if st.button('Executar Previsão Avançada', key='run_advanced'):
         st.subheader("Backtest: Preço Real vs Preço Previsto (linhas)")
         st.plotly_chart(fig_bt, use_container_width=True)
 
-        # Export result
+        # Export
         adv_result = {
             'timestamp': pd.Timestamp.now().isoformat(),
             'ticker': ticker_symbol,
@@ -561,3 +570,4 @@ last_update = pd.to_datetime(data.index[-1]).strftime('%d/%m/%Y')
 st.markdown("---")
 st.caption(f"Última atualização dos preços: **{last_update}** — Dados: Yahoo Finance.")
 st.markdown("<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)
+

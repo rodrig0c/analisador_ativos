@@ -1,5 +1,8 @@
 # app.py
-# Analisador com validação 180 dias, confiança = (1 - MAPE)*100 e backtest visível
+# Analisador com ensemble (RandomForest, Prophet, LSTM quando disponível),
+# backtest com linhas (preço real x preço previsto), Prophet fix (ds,y),
+# arredondamento 2 casas decimais, confiança = (1 - MAPE)*100,
+# mínimo 180 dias para análise avançada, e layout não destrutivo.
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -9,6 +12,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
 import io, zipfile, json, warnings
+from math import isfinite
 
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.svm import SVR
@@ -17,9 +21,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 warnings.filterwarnings('ignore')
-st.set_page_config(page_title="Analisador de Ativos (Confiança+Backtest)", layout="wide")
+st.set_page_config(page_title="Analisador (Ensemble+Prophet+LSTM) — Backtest", layout="wide")
 
-# Optional: Prophet and TensorFlow (LSTM) if installed
+# Optional libs
 HAS_PROPHET = False
 HAS_TF = False
 try:
@@ -27,17 +31,18 @@ try:
     HAS_PROPHET = True
 except Exception:
     HAS_PROPHET = False
+
 try:
     import tensorflow as tf
     from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import Dense, LSTM, Dropout
+    from tensorflow.keras.layers import LSTM, Dense, Dropout
     HAS_TF = True
 except Exception:
     HAS_TF = False
 
 # UI
-st.title('📊 Analisador Interativo de Ativos — Confiança & Backtest')
-st.write('Todas as datas no formato dd/mm/YYYY. Use com cautela.')
+st.title('📊 Analisador — Ensemble (RF + Prophet + LSTM) com Backtest')
+st.write('Datas em dd/mm/YYYY. Confiança = (1 − MAPE de backtest) × 100. Mínimo 180 dias para análise avançada.')
 
 st.sidebar.header('⚙️ Parâmetros')
 start_default = date(2019, 1, 1)
@@ -47,10 +52,11 @@ view_period = st.sidebar.selectbox("Período de visualização", ["Últimos 3 me
 view_map = {"Últimos 3 meses": 63, "Últimos 6 meses": 126, "Último 1 ano": 252, "Todo período": None}
 viz_days = view_map[view_period]
 
-MIN_DAYS_CHARTS = 60         # mínimo para mostrar gráficos históricos
-MIN_DAYS_ADVANCED = 180      # mínimo para permitir análise avançada (requisitado)
+MIN_DAYS_CHARTS = 60
+MIN_DAYS_ADVANCED = 180
+FORECAST_DAYS = 5
 
-# Helpers: data and indicators
+# --- Helpers: load and indicators
 @st.cache_data
 def get_tickers_from_csv():
     try:
@@ -92,7 +98,7 @@ def calculate_indicators(df):
     df['Volatility'] = df['Daily Return'].rolling(window=30, min_periods=1).std() * (252**0.5)
     return df
 
-def prepare_advanced_features(df, forecast_days=5):
+def prepare_advanced_features(df, forecast_days=FORECAST_DAYS):
     d = df[['Close','Volume','RSI','MM_Curta','MM_Longa','Volatility']].copy()
     periods = [1,3,5,10,20]
     for p in periods:
@@ -106,16 +112,17 @@ def prepare_advanced_features(df, forecast_days=5):
     d['price_vs_ma50'] = d['Close'] / d['MM_Longa'].replace(0, np.nan)
     d['ma_cross'] = (d['MM_Curta'] > d['MM_Longa']).astype(int)
     d['target_future_return'] = d['Close'].shift(-forecast_days) / d['Close'] - 1
+    d['target_future_price'] = d['Close'].shift(-forecast_days)  # real future price for backtest plotting
     d['target_direction'] = (d['target_future_return'] > 0).astype(int)
     d.replace([np.inf,-np.inf], np.nan, inplace=True)
     potential = [c for c in d.columns if c.startswith(('return_','volume_ma_','high_','low_','volatility_','price_vs_','ma_cross'))]
     potential.extend(['RSI','Volatility'])
     features = [c for c in potential if c in d.columns and not d[c].isnull().all()]
-    required = features + ['target_future_return','target_direction']
+    required = features + ['target_future_return','target_future_price','target_direction']
     d.dropna(subset=required, inplace=True)
     return d, features
 
-# Modeling helpers
+# Models
 def create_classic_models():
     return {
         'Random Forest': RandomForestRegressor(n_estimators=200, max_depth=12, random_state=42, n_jobs=-1),
@@ -124,6 +131,7 @@ def create_classic_models():
         'Neural Net': MLPRegressor(hidden_layer_sizes=(64,32), max_iter=1000, random_state=42)
     }
 
+# Metrics on returns
 def compute_metrics(y_true, y_pred):
     mask = np.isfinite(y_pred)
     if mask.sum() == 0:
@@ -137,110 +145,150 @@ def compute_metrics(y_true, y_pred):
     hit = float(np.mean((np.sign(y_t) == np.sign(y_p)).astype(float)))
     return {'MAE': mae, 'RMSE': rmse, 'MAPE': mape, 'HitRate': hit}
 
-def backtest_models(models_dict, adv_df, features, forecast_days=5, include_prophet=False, include_lstm=False, lstm_epochs=20, progress_callback=None):
+# Backtest function: returns price series for real vs predicted (2 decimals)
+def backtest_ensemble(adv_df, features, include_prophet=HAS_PROPHET, include_lstm=HAS_TF, progress_callback=None):
     # 80/20 split
     X = adv_df[features]
-    y = adv_df['target_future_return']
+    y_ret = adv_df['target_future_return']
+    y_price = adv_df['target_future_price']
     split = int(len(X) * 0.8)
     X_train, X_test = X.iloc[:split], X.iloc[split:]
-    y_train, y_test = y.iloc[:split], y.iloc[split:]
+    y_train_ret, y_test_ret = y_ret.iloc[:split], y_ret.iloc[split:]
+    y_test_price = y_price.iloc[split:split+len(X_test)]
     scaler = StandardScaler()
     X_train_s = scaler.fit_transform(X_train)
     X_test_s = scaler.transform(X_test)
+
+    models = create_classic_models()
     trained = {}
     results = {}
-
-    total_models = len(models_dict) + (1 if include_prophet else 0) + (1 if include_lstm else 0)
+    total = len(models) + (1 if include_prophet else 0) + (1 if include_lstm else 0)
     done = 0
-    for name, model in models_dict.items():
+
+    # Classic models predict returns on X_test
+    for name, model in models.items():
         try:
-            model.fit(X_train_s, y_train)
-            y_pred = model.predict(X_test_s)
-            results[name] = compute_metrics(y_test.values, y_pred)
-            trained[name] = {'model': model, 'y_pred': y_pred}
+            model.fit(X_train_s, y_train_ret)
+            preds_ret = model.predict(X_test_s)
+            # predicted prices for test set: base_price * (1 + pred_return)
+            base_prices = adv_df['Close'].iloc[split:split+len(X_test)].values
+            preds_price = (1 + preds_ret) * base_prices
+            trained[name] = {'pred_ret': preds_ret, 'pred_price': preds_price}
+            results[name] = compute_metrics(y_test_ret.values, preds_ret)
         except Exception as e:
+            trained[name] = {'pred_ret': np.full(len(X_test), np.nan), 'pred_price': np.full(len(X_test), np.nan)}
             results[name] = {'error': str(e)}
-            trained[name] = {'model': None, 'y_pred': np.full(len(y_test), np.nan)}
         done += 1
-        if progress_callback: progress_callback(done / total_models)
+        if progress_callback: progress_callback(done / total)
 
-    # Prophet (price-based) if available
-    if include_prophet and HAS_PROPHET:
-        try:
-            train_close = adv_df['Close'].iloc[:split].reset_index().rename(columns={'index':'ds','Close':'y'})
-            m = Prophet()
-            m.fit(train_close)
-            # forecast range sufficient to cover test end + forecast_days
-            last_needed = adv_df.index[split + len(X_test) - 1] + pd.Timedelta(days=forecast_days+5)
-            future = m.make_future_dataframe(periods=(len(pd.date_range(start=adv_df.index[split], end=last_needed, freq='B'))), freq='D')
-            fcst = m.predict(future).set_index('ds')
-            preds = []
-            for t in adv_df.index[split:split+len(X_test)]:
-                t_plus = (pd.to_datetime(t) + pd.Timedelta(days=forecast_days)).normalize()
-                if t_plus in fcst.index:
-                    pred_price = fcst.loc[t_plus, 'yhat']
-                else:
-                    pred_price = fcst['yhat'].iloc[-1]
-                base = adv_df.loc[t, 'Close']
-                preds.append((pred_price / base) - 1)
-            preds = np.array(preds)
-            results['Prophet'] = compute_metrics(y_test.values, preds)
-            trained['Prophet'] = {'model': m, 'y_pred': preds}
-        except Exception as e:
-            results['Prophet'] = {'error': str(e)}
-            trained['Prophet'] = {'model': None, 'y_pred': np.full(len(y_test), np.nan)}
+    # Prophet: train on historical Close (ds,y). produce predicted price for t+FORECAST_DAYS for each t in test set
+    if include_prophet:
+        if HAS_PROPHET:
+            try:
+                # build prophet train df ensuring 'ds' and 'y' and no NaN
+                train_df = adv_df[['Close']].iloc[:split].reset_index().rename(columns={'index':'ds','Close':'y'})
+                train_df['ds'] = pd.to_datetime(train_df['ds'])
+                train_df['y'] = pd.to_numeric(train_df['y'], errors='coerce')
+                train_df.dropna(inplace=True)
+                if train_df.empty:
+                    raise ValueError("Prophet: dados de treino insuficientes após limpeza.")
+                m = Prophet()
+                m.fit(train_df)
+                # create future dataframe covering all needed forecast target dates
+                test_base_dates = adv_df.index[split:split+len(X_test)]
+                needed_dates = [ (pd.to_datetime(t) + pd.Timedelta(days=FORECAST_DAYS)).normalize() for t in test_base_dates ]
+                last_needed = max(needed_dates)
+                # make future up to last_needed (daily)
+                periods = (last_needed - train_df['ds'].max()).days + 5
+                future = m.make_future_dataframe(periods=max(0, periods), freq='D')
+                fcst = m.predict(future).set_index('ds')
+                preds_price = []
+                for t in test_base_dates:
+                    target_date = (pd.to_datetime(t) + pd.Timedelta(days=FORECAST_DAYS)).normalize()
+                    if target_date in fcst.index:
+                        pred_price = float(fcst.loc[target_date, 'yhat'])
+                    else:
+                        # fallback to nearest available
+                        pred_price = float(fcst['yhat'].iloc[-1])
+                    preds_price.append(pred_price)
+                preds_price = np.array(preds_price)
+                # compute implied returns relative to base price
+                base_prices = adv_df['Close'].iloc[split:split+len(X_test)].values
+                preds_ret = preds_price / base_prices - 1
+                trained['Prophet'] = {'pred_ret': preds_ret, 'pred_price': preds_price}
+                results['Prophet'] = compute_metrics(y_test_ret.values, preds_ret)
+            except Exception as e:
+                trained['Prophet'] = {'pred_ret': np.full(len(X_test), np.nan), 'pred_price': np.full(len(X_test), np.nan)}
+                results['Prophet'] = {'error': f"Prophet error: {e}"}
+        else:
+            trained['Prophet'] = {'pred_ret': np.full(len(X_test), np.nan), 'pred_price': np.full(len(X_test), np.nan)}
+            results['Prophet'] = {'error': 'Prophet não instalado'}
         done += 1
-        if progress_callback: progress_callback(done / total_models)
+        if progress_callback: progress_callback(done / total)
 
-    # LSTM optional skipped here for brevity if TF not installed
-    if include_lstm and HAS_TF:
-        try:
-            X_train_seq = X_train_s.reshape((X_train_s.shape[0], 1, X_train_s.shape[1]))
-            X_test_seq = X_test_s.reshape((X_test_s.shape[0], 1, X_test_s.shape[1]))
-            model = Sequential()
-            model.add(LSTM(64, input_shape=(X_train_seq.shape[1], X_train_seq.shape[2])))
-            model.add(Dropout(0.2))
-            model.add(Dense(32, activation='relu'))
-            model.add(Dense(1))
-            model.compile(optimizer='adam', loss='mse')
-            model.fit(X_train_seq, y_train.values, epochs=lstm_epochs, batch_size=16, verbose=0)
-            y_pred = model.predict(X_test_seq).flatten()
-            results['LSTM'] = compute_metrics(y_test.values, y_pred)
-            trained['LSTM'] = {'model': model, 'y_pred': y_pred}
-        except Exception as e:
-            results['LSTM'] = {'error': str(e)}
-            trained['LSTM'] = {'model': None, 'y_pred': np.full(len(y_test), np.nan)}
+    # LSTM optional: simple sequence model on scaled features
+    if include_lstm:
+        if HAS_TF:
+            try:
+                X_train_seq = X_train_s.reshape((X_train_s.shape[0], 1, X_train_s.shape[1]))
+                X_test_seq = X_test_s.reshape((X_test_s.shape[0], 1, X_test_s.shape[1]))
+                model = Sequential()
+                model.add(LSTM(64, input_shape=(X_train_seq.shape[1], X_train_seq.shape[2])))
+                model.add(Dropout(0.2))
+                model.add(Dense(32, activation='relu'))
+                model.add(Dense(1))
+                model.compile(optimizer='adam', loss='mse')
+                model.fit(X_train_seq, y_train_ret.values, epochs=20, batch_size=16, verbose=0)
+                preds_ret = model.predict(X_test_seq).flatten()
+                base_prices = adv_df['Close'].iloc[split:split+len(X_test)].values
+                preds_price = (1 + preds_ret) * base_prices
+                trained['LSTM'] = {'pred_ret': preds_ret, 'pred_price': preds_price}
+                results['LSTM'] = compute_metrics(y_test_ret.values, preds_ret)
+            except Exception as e:
+                trained['LSTM'] = {'pred_ret': np.full(len(X_test), np.nan), 'pred_price': np.full(len(X_test), np.nan)}
+                results['LSTM'] = {'error': f"LSTM error: {e}"}
+        else:
+            trained['LSTM'] = {'pred_ret': np.full(len(X_test), np.nan), 'pred_price': np.full(len(X_test), np.nan)}
+            results['LSTM'] = {'error': 'TensorFlow não instalado'}
         done += 1
-        if progress_callback: progress_callback(done / total_models)
+        if progress_callback: progress_callback(done / total)
 
-    # Ensemble mean across available predictions
-    all_preds = [v['y_pred'] for v in trained.values() if 'y_pred' in v]
-    if len(all_preds) == 0:
-        ensemble_pred = np.full(len(y_test), np.nan)
-    else:
-        stacked = np.vstack([np.where(np.isfinite(a), a, np.nan) for a in all_preds])
-        ensemble_pred = np.nanmean(stacked, axis=0)
-    results['Ensemble'] = compute_metrics(y_test.values, ensemble_pred)
-    return {'results': results, 'trained': trained, 'y_test_index': adv_df.index[split:split+len(X_test)], 'y_test': y_test.values, 'ensemble_pred': ensemble_pred}
+    # Build ensemble predicted price as mean across available predicted prices (ignore NaN)
+    pred_price_matrix = np.vstack([v['pred_price'] for v in trained.values()])
+    pred_price_matrix = np.where(np.isfinite(pred_price_matrix), pred_price_matrix, np.nan)
+    ensemble_price = np.nanmean(pred_price_matrix, axis=0)
+    # compute ensemble implied returns vs real return for test set
+    base_prices = adv_df['Close'].iloc[split:split+len(X_test)].values
+    ensemble_ret = ensemble_price / base_prices - 1
+    results['Ensemble'] = compute_metrics(y_test_ret.values, ensemble_ret)
 
-# Confidence helper using MAPE thresholds
+    # Prepare DataFrame for plotting: Date, RealPrice (target_future_price), PredictedPrice (ensemble)
+    df_plot = pd.DataFrame({
+        'Data': adv_df.index[split:split+len(X_test)],
+        'RealPrice': np.array(y_test_price, dtype=float),
+        'PredPrice': ensemble_price
+    })
+    # Round to 2 decimals for display
+    df_plot['RealPrice'] = df_plot['RealPrice'].round(2)
+    df_plot['PredPrice'] = np.round(df_plot['PredPrice'].astype(float), 2)
+    return {'results': results, 'trained': trained, 'df_plot': df_plot, 'ensemble_ret': ensemble_ret}
+
+# Confidence helper
 def confidence_from_mape(mape):
-    # mape in decimal (0.05 = 5%)
     if mape is None: return 0.0, "BAIXA CONFIANÇA", "#E74C3C"
     conf_pct = max(0.0, min(1.0, 1.0 - mape)) * 100.0
-    if mape < 0.05: label, color = "ALTA CONFIANÇA", "#2ECC71"
-    elif mape < 0.10: label, color = "MÉDIA CONFIANÇA", "#F1C40F"
-    else: label, color = "BAIXA CONFIANÇA", "#E74C3C"
-    return conf_pct, label, color
+    if mape < 0.05: return conf_pct, "ALTA CONFIANÇA", "#2ECC71"
+    if mape < 0.10: return conf_pct, "MÉDIA CONFIANÇA", "#F1C40F"
+    return conf_pct, "BAIXA CONFIANÇA", "#E74C3C"
 
-# Load tickers
+# --- Main flow ---
 tickers_df = get_tickers_from_csv()
 selected_display = st.sidebar.selectbox('Escolha a Ação', tickers_df['display'])
 ticker_symbol = tickers_df[tickers_df['display'] == selected_display]['ticker'].iloc[0]
 company_name = tickers_df[tickers_df['display'] == selected_display]['nome'].iloc[0]
 ticker = f"{ticker_symbol}.SA"
 
-# Clear analyses when ticker changes
+# clear analyses when ticker changes
 if 'last_ticker' not in st.session_state:
     st.session_state['last_ticker'] = ticker_symbol
 else:
@@ -257,7 +305,7 @@ if data.empty or len(data) < 1:
 
 data = calculate_indicators(data)
 
-# Header metrics
+# Header
 st.subheader('📈 Visão Geral do Ativo')
 last_price = float(data['Close'].iloc[-1])
 prev_price = float(data['Close'].iloc[-2]) if len(data) >= 2 else last_price
@@ -270,7 +318,7 @@ c3.metric("💰 Último Preço", f"R$ {last_price:.2f}")
 c4.metric("📊 Variação (Dia)", f"{price_change:+.2f} R$", f"{percent_change:+.2f}%")
 st.markdown("---")
 
-# Initial charts: require MIN_DAYS_CHARTS to show, otherwise friendly warning (no error)
+# Initial charts (respect MIN_DAYS_CHARTS)
 tab1, tab2, tab3 = st.tabs(["Preço e Indicadores", "Volatilidade", "Comparativo com IBOVESPA"])
 if viz_days is None:
     view_slice = slice(None)
@@ -280,7 +328,7 @@ else:
 with tab1:
     st.subheader('Preço, Médias Móveis e Bandas de Bollinger')
     if len(data) < MIN_DAYS_CHARTS:
-        st.warning(f"Dados insuficientes para gráficos históricos (mínimo {MIN_DAYS_CHARTS} dias). Histórico disponível: {len(data)} dias.")
+        st.warning(f"Dados insuficientes para gráficos históricos (mínimo {MIN_DAYS_CHARTS} dias). Histórico: {len(data)} dias.")
     else:
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['Close'][view_slice], name='Close'))
@@ -328,11 +376,10 @@ st.markdown("---")
 
 # Simple volatility model (independent)
 st.subheader('🧠 Volatilidade — Modelo Simples (RandomForest)')
-st.write("Modelo simples para prever volatilidade do próximo dia útil. Não sobrescreve análise avançada.")
 if st.button('Executar Previsão de Volatilidade (Simples)', key='vol_simple'):
     df_vol = data[['Volatility']].copy().dropna()
     if len(df_vol) < 30:
-        st.warning("Dados insuficientes para treinar o modelo de volatilidade (mínimo 30 dias).")
+        st.warning("Dados insuficientes (mínimo 30 dias).")
     else:
         for lag in range(1,6): df_vol[f'vol_lag_{lag}'] = df_vol['Volatility'].shift(lag)
         df_vol.dropna(inplace=True)
@@ -357,101 +404,79 @@ if st.session_state.get('vol_result') is not None:
 st.markdown("---")
 
 # Advanced ML + backtest
-st.subheader('🔮 Previsão de Preço Avançada (ML + Backtest)')
-st.write(f"Requer mínimo {MIN_DAYS_ADVANCED} dias de histórico para rodar. Prophet/TensorFlow usados se instalados.")
+st.subheader('🔮 Previsão de Preço Avançada (Ensemble + Backtest)')
+st.write(f"Requer mínimo {MIN_DAYS_ADVANCED} dias de histórico para rodar. Prophet e LSTM serão usados se instalados no ambiente.")
 
 if st.button('Executar Previsão Avançada', key='run_advanced'):
-    adv_df, used_features = prepare_advanced_features(data, forecast_days=5)
+    adv_df, used_features = prepare_advanced_features(data, forecast_days=FORECAST_DAYS)
     dias_utilizados = len(adv_df)
     st.markdown(f"<div style='background:#0b1220;padding:10px;border-radius:8px'><span style='color:#fff;font-weight:700'>Dias solicitados:</span> <span style='color:#ddd;margin-left:8px'>{pd.to_datetime(start_date).strftime('%d/%m/%Y')} — {pd.to_datetime(end_date).strftime('%d/%m/%Y')} (<strong style='color:#fff'>{dias_utilizados} dias usados</strong>)</span></div>", unsafe_allow_html=True)
 
     if dias_utilizados < MIN_DAYS_ADVANCED:
         st.warning(f"Dados insuficientes para análise avançada. Linhas válidas após limpeza: {dias_utilizados}. Mínimo requerido: {MIN_DAYS_ADVANCED}.")
     else:
-        models = create_classic_models()
-        include_prophet = HAS_PROPHET
-        include_lstm = HAS_TF
         progress_bar = st.progress(0)
-        def prog_callback(fraction):
-            try:
-                progress_bar.progress(min(100, int(fraction*100)))
-            except Exception:
-                pass
+        def prog(p): progress_bar.progress(min(100, int(p*100)))
+        with st.spinner("Executando backtest (80/20) e treinando modelos..."):
+            bt = backtest_ensemble(adv_df, used_features, include_prophet=True, include_lstm=True, progress_callback=prog)
 
-        with st.spinner("Treinando modelos e executando backtest (80/20)..."):
-            bt = backtest_models(models, adv_df, used_features, forecast_days=5, include_prophet=include_prophet, include_lstm=include_lstm, lstm_epochs=25, progress_callback=prog_callback)
-
+        # Show backtest metrics table (MAPE etc.)
         metrics = bt['results']
-        # Prepare table
         rows = []
-        for name, m in metrics.items():
-            if 'error' in m:
-                rows.append({'Modelo': name, 'MAE': None, 'RMSE': None, 'MAPE': None, 'HitRate': None, 'Erro': m['error']})
+        for k, v in metrics.items():
+            if 'error' in v:
+                rows.append({'Modelo': k, 'MAE': None, 'RMSE': None, 'MAPE': None, 'HitRate': None, 'Erro': v.get('error')})
             else:
-                rows.append({'Modelo': name, 'MAE': m['MAE'], 'RMSE': m['RMSE'], 'MAPE': m['MAPE'], 'HitRate': m['HitRate']})
+                rows.append({'Modelo': k, 'MAE': v['MAE'], 'RMSE': v['RMSE'], 'MAPE': v['MAPE'], 'HitRate': v['HitRate']})
         metrics_df = pd.DataFrame(rows)
-        st.subheader("Backtest (80% treino / 20% teste) — métricas")
+        st.subheader("Backtest (80% treino / 20% teste) — métricas (retornos)")
         st.dataframe(metrics_df.fillna("N/A"), use_container_width=True)
 
-        # Ensemble metrics -> compute confidence = (1 - MAPE) * 100
-        ensemble_m = metrics.get('Ensemble', {})
-        ensemble_mape = ensemble_m.get('MAPE', None)
-        conf_pct, conf_label, conf_color = (0.0, "BAIXA CONFIANÇA", "#E74C3C")
-        if ensemble_mape is not None:
-            conf_pct = max(0.0, min(1.0, 1.0 - ensemble_mape)) * 100.0
-            if ensemble_mape < 0.05: conf_label, conf_color = "ALTA CONFIANÇA", "#2ECC71"
-            elif ensemble_mape < 0.10: conf_label, conf_color = "MÉDIA CONFIANÇA", "#F1C40F"
-            else: conf_label, conf_color = "BAIXA CONFIANÇA", "#E74C3C"
+        # Confidence from ensemble MAPE
+        ensemble_mape = metrics.get('Ensemble', {}).get('MAPE', None)
+        conf_pct, conf_label, conf_color = confidence_from_mape(ensemble_mape)
+        st.markdown(f"<div style='background:#0b1220;padding:8px;border-radius:8px'><span style='color:#ddd;font-size:16px;font-weight:700'>Confiança (1 − MAPE):</span> <span style='color:{conf_color};font-size:20px;font-weight:900;margin-left:12px'>{conf_label} ({conf_pct:.1f}%)</span></div>", unsafe_allow_html=True)
 
-        st.markdown(f"<div style='background:#0b1220;padding:8px;border-radius:8px'><span style='color:#ddd;font-size:16px;font-weight:700'>Confiança (baseado em MAPE do backtest):</span> <span style='color:{conf_color};font-size:20px;font-weight:900;margin-left:12px'>{conf_label} ({conf_pct:.1f}%)</span></div>", unsafe_allow_html=True)
-
-        # Build final predictions using ensemble mean of trained models' last test predictions as proxy
+        # Final predictions: use ensemble mean of last trained models' prediction on their test set last element as proxy
         trained = bt['trained']
-        per_model_future = {}
+        per_model_latest_ret = {}
         for name, info in trained.items():
-            ypred = info.get('y_pred', None)
-            if ypred is None or len(ypred) == 0:
-                per_model_future[name] = float('nan')
+            preds_ret = info.get('pred_ret', None)
+            if preds_ret is None or len(preds_ret) == 0:
+                per_model_latest_ret[name] = float('nan')
             else:
-                try:
-                    per_model_future[name] = float(ypred[-1])
-                except Exception:
-                    per_model_future[name] = float('nan')
-        valid_vals = np.array([v for v in per_model_future.values() if np.isfinite(v)], dtype=float)
-        if valid_vals.size == 0:
-            ensemble_future = 0.0
-        else:
-            ensemble_future = float(np.mean(valid_vals))
-        capped = float(np.clip(ensemble_future, -0.5, 0.5))
-        daily_rate = (1 + capped)**(1/5) - 1
+                per_model_latest_ret[name] = float(preds_ret[-1]) if isfinite(preds_ret[-1]) else float('nan')
+        valid_vals = np.array([v for v in per_model_latest_ret.values() if np.isfinite(v)], dtype=float)
+        ensemble_future_ret = float(np.mean(valid_vals)) if valid_vals.size > 0 else 0.0
+        ensemble_future_ret = float(np.clip(ensemble_future_ret, -0.5, 0.5))
+        daily_rate = (1 + ensemble_future_ret) ** (1/FORECAST_DAYS) - 1
         current_price = float(data['Close'].iloc[-1])
         current_date = pd.to_datetime(data.index[-1])
         preds_display = []
-        temp = current_price
-        for d in range(1,6):
-            temp *= (1 + daily_rate)
-            fut_date = (current_date + BDay(d)).normalize()
-            preds_display.append({'Dias': d, 'Data': fut_date.strftime('%d/%m/%Y'), 'Preço Previsto': temp, 'Variação': (temp/current_price - 1)})
+        tmp = current_price
+        for d in range(1, FORECAST_DAYS+1):
+            tmp *= (1 + daily_rate)
+            preds_display.append({'Dias': d, 'Data': (current_date + BDay(d)).strftime('%d/%m/%Y'), 'Preço Previsto': round(tmp, 2), 'Variação': round(tmp/current_price - 1, 4)})
         preds_df = pd.DataFrame(preds_display)
 
-        # Emphasized forecast block
         st.subheader("Projeção de Preço para os Próximos 5 Dias (baseado na última data disponível)")
         st.markdown("<div style='background:#071626;padding:12px;border-radius:10px'>", unsafe_allow_html=True)
-        for row in preds_df.to_dict(orient='records'):
-            st.markdown(f"<div style='display:flex;justify-content:space-between;align-items:center;padding:8px 6px;border-radius:6px;margin-bottom:6px'><div style='color:#ddd;font-size:16px'>{row['Data']}</div><div style='color:#00BFFF;font-size:28px;font-weight:900'>R$ {row['Preço Previsto']:,.2f}</div><div style='color:#ddd;font-size:16px'>{row['Variação']:+.2%}</div></div>", unsafe_allow_html=True)
+        for r in preds_df.to_dict(orient='records'):
+            st.markdown(f"<div style='display:flex;justify-content:space-between;align-items:center;padding:8px 6px;border-radius:6px;margin-bottom:6px'><div style='color:#ddd;font-size:16px'>{r['Data']}</div><div style='color:#00BFFF;font-size:28px;font-weight:900'>R$ {r['Preço Previsto']:,.2f}</div><div style='color:#ddd;font-size:16px'>{r['Variação']:+.2%}</div></div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Backtest plot: real vs ensemble predicted returns on test set
-        y_idx = bt['y_test_index']; y_test = bt['y_test']; ensemble_pred = bt['ensemble_pred']
-        df_bt = pd.DataFrame({'Data': y_idx, 'Real': y_test, 'Previsto': ensemble_pred}).set_index('Data')
-        st.subheader("Backtest: Retorno Real vs Retorno Previsto (Ensemble) — Período de Teste")
+        # Backtest plot lines: real price (target_future_price) vs ensemble predicted price
+        df_plot = bt['df_plot'].copy()
+        # ensure dates are datetime
+        df_plot['Data'] = pd.to_datetime(df_plot['Data'])
         fig_bt = go.Figure()
-        fig_bt.add_trace(go.Scatter(x=df_bt.index, y=df_bt['Real'], name='Retorno Real'))
-        fig_bt.add_trace(go.Scatter(x=df_bt.index, y=df_bt['Previsto'], name='Retorno Previsto (Ensemble)', line=dict(dash='dash')))
-        fig_bt.update_layout(xaxis_title='Data', yaxis_title='Retorno (decimal)')
+        fig_bt.add_trace(go.Scatter(x=df_plot['Data'], y=df_plot['RealPrice'], name='Preço Real (t+5)', line=dict(color='blue')))
+        fig_bt.add_trace(go.Scatter(x=df_plot['Data'], y=df_plot['PredPrice'], name='Preço Previsto (Ensemble)', line=dict(color='red', dash='dash')))
+        fig_bt.update_layout(title='Backtest: Preço Real vs Preço Previsto (Período de Teste)', xaxis_title='Data', yaxis_title='Preço (R$)')
+        st.subheader("Backtest: Preço Real vs Preço Previsto (linhas)")
         st.plotly_chart(fig_bt, use_container_width=True)
 
-        # Export results
+        # Export result
         adv_result = {
             'timestamp': pd.Timestamp.now().isoformat(),
             'ticker': ticker_symbol,
@@ -459,8 +484,8 @@ if st.button('Executar Previsão Avançada', key='run_advanced'):
             'rows_used': int(dias_utilizados),
             'features_used': used_features,
             'backtest_metrics': metrics,
-            'per_model_return_predictions': per_model_future,
-            'ensemble_future_return': ensemble_future,
+            'per_model_latest_ret': per_model_latest_ret,
+            'ensemble_future_ret': ensemble_future_ret,
             'predictions_df': preds_df.to_dict(orient='records'),
             'confidence_pct': conf_pct
         }
@@ -474,7 +499,7 @@ if st.button('Executar Previsão Avançada', key='run_advanced'):
 
 st.markdown("---")
 
-# Import & compare final section (always at end)
+# Import & compare
 st.subheader("📂 Importar e Comparar Previsões Exportadas")
 uploaded = st.file_uploader("Carregar ZIP de análise exportada por esta ferramenta", type=["zip"])
 if uploaded is not None:
@@ -531,11 +556,8 @@ if uploaded is not None:
     except Exception as e:
         st.error(f"Erro ao processar ZIP: {e}")
 
-# Footer
+# footer
 last_update = pd.to_datetime(data.index[-1]).strftime('%d/%m/%Y')
 st.markdown("---")
 st.caption(f"Última atualização dos preços: **{last_update}** — Dados: Yahoo Finance.")
 st.markdown("<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)
-
-
-

@@ -494,8 +494,10 @@ if uploaded is not None:
     except Exception as e:
         st.error(f"Ocorreu um erro ao processar o arquivo ZIP: {e}")
 
+
 # --- Rodapé ---
 st.markdown("---")
-last_update = pd.to_datetime(data.index[-1]).strftime('%d/%m/%Y %H:%M:%S')
-st.caption(f"Última atualização dos preços: **{last_update}** — Dados: Yahoo Finance.")
+# Captura a data e hora exatas da execução para refletir a atualização real da consulta
+horario_consulta = pd.Timestamp.now(tz='America/Sao_Paulo').strftime('%d/%m/%Y %H:%M:%S')
+st.caption(f"Última consulta dos dados: **{horario_consulta}** — Dados: Yahoo Finance.")
 st.markdown("<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)

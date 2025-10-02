@@ -257,16 +257,31 @@ if data.empty or len(data) < 1:
     st.stop()
 data = calculate_indicators(data)
 
+# Substitua o bloco "Visão Geral do Ativo" pelo código abaixo
+
 st.subheader('📈 Visão Geral do Ativo')
-last_price = data['Close'].iloc[-1]
+
+# --- NOVA LÓGICA PARA BUSCAR PREÇO ATUALIZADO ---
+# Busca o dado intraday mais recente (com delay de ~15min)
+try:
+    live_data = yf.Ticker(ticker).history(period='1d', interval='1m')
+    if not live_data.empty:
+        last_price = live_data['Close'].iloc[-1]
+    else: # Fallback para o fechamento do dia anterior se não houver dado intraday
+        last_price = data['Close'].iloc[-1]
+except Exception:
+    last_price = data['Close'].iloc[-1] # Fallback em caso de erro
+
 prev_price = data['Close'].iloc[-2] if len(data) >= 2 else last_price
 price_change = last_price - prev_price
 percent_change = (price_change / prev_price * 100) if prev_price != 0 else 0.0
+
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("🏢 Empresa", company_name)
 c2.metric("💹 Ticker", ticker_symbol)
 c3.metric("💰 Último Preço", f"R$ {last_price:.2f}")
-c4.metric("📊 Variação (Dia)", f"{price_change:+.2f} R$", f"{percent_change:+.2f}%")
+c4.metric("📊 Variação (vs. Fech. Anterior)", f"{price_change:+.2f} R$", f"{percent_change:+.2f}%")
+
 st.markdown("---")
 
 tab1, tab2, tab3 = st.tabs(["Preço e Indicadores", "Volatilidade", "Comparativo com IBOVESPA"])

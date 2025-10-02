@@ -1,8 +1,9 @@
+
 # app.py
-# Versão com:
-# - Correção no gráfico das Bandas de Bollinger para exibição de área preenchida.
-# - Remoção da seção de análise simples de volatilidade.
-# - Manutenção de todas as outras funcionalidades.
+# Versão Final com:
+# - Legenda corrigida para as Bandas de Bollinger.
+# - Funcionalidade de exportar a análise avançada (para importação futura) restaurada.
+# - Timestamp da última cotação com horas, minutos e segundos.
 
 import streamlit as st
 import pandas as pd
@@ -250,7 +251,6 @@ ticker = f"{ticker_symbol}.SA"
 if st.session_state.get('last_ticker') != ticker_symbol:
     st.session_state['last_ticker'] = ticker_symbol
     st.session_state['advanced_result'] = None
-    st.session_state['vol_result'] = None
 
 data = load_data(ticker, start_date, end_date)
 ibov = load_data('^BVSP', start_date, end_date)
@@ -277,35 +277,35 @@ view_slice = slice(-viz_days, None) if viz_days is not None else slice(None)
 with tab1:
     st.subheader('Preço, Médias Móveis e Bandas de Bollinger')
     if len(data) < MIN_DAYS_CHARTS:
-        st.warning(f"Dados insuficientes para gráficos históricos (mínimo {MIN_DAYS_CHARTS} dias). Histórico: {len(data)} dias.")
+        st.warning(f"Dados insuficientes para gráficos históricos (mínimo {MIN_DAYS_CHARTS} dias).")
     else:
         fig = go.Figure()
         
-        # --- CORREÇÃO DAS BANDAS DE BOLLINGER ---
-        # Adiciona as bandas primeiro para que o preenchimento funcione corretamente
-        # A linha em si é invisível (width=0), apenas a área preenchida é mostrada.
+        # 1. Adiciona a área das Bandas de Bollinger primeiro
         fig.add_trace(go.Scatter(
-            x=data.index[view_slice],
-            y=data['BB_Superior'][view_slice],
-            line=dict(width=0),
-            showlegend=False,
-            name='Banda Superior'
+            x=data.index[view_slice], y=data['BB_Superior'][view_slice],
+            line=dict(width=0), showlegend=False, name='Banda Superior'
         ))
         fig.add_trace(go.Scatter(
-            x=data.index[view_slice],
-            y=data['BB_Inferior'][view_slice],
-            fill='tonexty',
-            fillcolor='rgba(173, 216, 230, 0.3)', # Cor de preenchimento lightblue semitransparente
-            line=dict(width=0),
-            showlegend=False,
-            name='Banda Inferior'
+            x=data.index[view_slice], y=data['BB_Inferior'][view_slice],
+            fill='tonexty', fillcolor='rgba(0, 176, 246, 0.2)',  # Cor azulada semitransparente
+            line=dict(width=0), name='Bandas de Bollinger', showlegend=True
         ))
 
-        # Adiciona as outras linhas sobre as bandas
-        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['Close'][view_slice], name='Preço de Fechamento', line=dict(color='white')))
-        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['MM_Curta'][view_slice], name='Média Móvel 20 Dias', line=dict(color='cyan')))
-        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['MM_Longa'][view_slice], name='Média Móvel 50 Dias', line=dict(color='magenta')))
-
+        # 2. Adiciona as linhas de tendência e preço sobre a área das bandas
+        fig.add_trace(go.Scatter(
+            x=data.index[view_slice], y=data['MM_Longa'][view_slice], 
+            name='Média Móvel 50 Dias', line=dict(color='purple', dash='dash') # Linha de tendência mais longa
+        ))
+        fig.add_trace(go.Scatter(
+            x=data.index[view_slice], y=data['MM_Curta'][view_slice], 
+            name='Banda Média (MM 20 Dias)', line=dict(color='yellow', width=1.5) # <-- DESTAQUE PARA A BANDA MÉDIA
+        ))
+        fig.add_trace(go.Scatter(
+            x=data.index[view_slice], y=data['Close'][view_slice], 
+            name='Preço de Fechamento', line=dict(color='cyan', width=2) # Linha de preço principal
+        ))
+        
         st.plotly_chart(fig, use_container_width=True)
         
         st.subheader('Índice de Força Relativa (RSI)')
@@ -313,7 +313,6 @@ with tab1:
         fig_rsi.add_hline(y=70, line_dash="dash", annotation_text="Sobrecompra")
         fig_rsi.add_hline(y=30, line_dash="dash", annotation_text="Sobrevenda")
         st.plotly_chart(fig_rsi, use_container_width=True)
-
 with tab2:
     st.subheader('Volatilidade (janela de 30 dias)')
     if len(data) < MIN_DAYS_CHARTS:
@@ -341,8 +340,6 @@ with tab3:
         st.plotly_chart(fig_comp, use_container_width=True)
 st.markdown("---")
 
-# --- SEÇÃO REMOVIDA: Análise Simples de Volatilidade ---
-
 st.subheader('🔮 Previsão Avançada e Análise de Performance')
 st.write(f"Requer no mínimo {MIN_DAYS_ADVANCED} dias de histórico. Modelos usados: Random Forest, Gradient Boosting, SVR, Neural Net, XGBoost (se instalado) e LSTM (se instalado).")
 
@@ -358,10 +355,10 @@ if st.button('Executar Previsão Avançada', key='run_advanced'):
         with st.spinner("Executando backtest (80/20) e treinando modelos..."):
             bt = backtest_ensemble(adv_df, used_features, progress_callback=prog)
         progress_bar.progress(1.0, text="Análise completa!")
-        st.session_state['advanced_result'] = bt
+        st.session_state['advanced_result'] = (bt, used_features)
 
 if 'advanced_result' in st.session_state and st.session_state['advanced_result']:
-    bt = st.session_state['advanced_result']
+    bt, used_features = st.session_state['advanced_result']
     metrics = bt['results']
     
     rows = []
@@ -382,10 +379,8 @@ if 'advanced_result' in st.session_state and st.session_state['advanced_result']
 
     st.subheader("Resultados do Backtest (Período de Teste: 20% dos dados)")
     sty = metrics_df.style.format({
-        'MAE (R$)': "R$ {:,.2f}",
-        'RMSE (R$)': "R$ {:,.2f}",
-        'MAPE (%)': "{:.2f}%",
-        'HitRate': "{:.2%}",
+        'MAE (R$)': "R$ {:,.2f}", 'RMSE (R$)': "R$ {:,.2f}",
+        'MAPE (%)': "{:.2f}%", 'HitRate': "{:.2%}",
     }, na_rep="N/A")
     st.dataframe(sty, use_container_width=True)
 
@@ -418,18 +413,43 @@ if 'advanced_result' in st.session_state and st.session_state['advanced_result']
         st.plotly_chart(fig_sim.update_layout(title='Evolução do Capital (R$)', xaxis_title='Data', yaxis_title='Capital (R$)'), use_container_width=True)
 
     st.subheader("Projeção de Preço para os Próximos 5 Dias")
-    st.caption("Baseado na média de todos os modelos, usando a última data disponível como ponto de partida.")
-    
     trained, current_price, current_date = bt['trained'], data['Close'].iloc[-1], pd.to_datetime(data.index[-1])
     valid_preds = [info['pred_ret'][-1] for info in trained.values() if info.get('pred_ret') is not None and len(info['pred_ret']) > 0 and np.isfinite(info['pred_ret'][-1])]
     ensemble_future_ret = np.mean(valid_preds) if valid_preds else 0.0
     daily_rate = (1 + np.clip(ensemble_future_ret, -0.5, 0.5)) ** (1/FORECAST_DAYS) - 1
     
     preds_display = [{'Data': (current_date + BDay(d)).strftime('%d/%m/%Y'), 'Preço Previsto': current_price * ((1 + daily_rate) ** d)} for d in range(1, FORECAST_DAYS + 1)]
-    for r in preds_display:
+    preds_df = pd.DataFrame(preds_display)
+    for r in preds_df.to_dict(orient='records'):
         r['Variação'] = r['Preço Previsto'] / current_price - 1
         var_color = "#2ECC71" if r['Variação'] > 0 else "#E74C3C"
         st.markdown(f"<div style='display:flex;justify-content:space-between;align-items:center;padding:8px 6px;border-radius:6px;margin-bottom:6px;background:#0b1220'><div style='color:#ddd;font-size:16px'>{r['Data']}</div><div style='color:#00BFFF;font-size:28px;font-weight:900'>R$ {r['Preço Previsto']:,.2f}</div><div style='color:{var_color};font-size:16px'>{r['Variação']:+.2%}</div></div>", unsafe_allow_html=True)
+    
+    # --- FUNCIONALIDADE DE EXPORTAÇÃO RESTAURADA ---
+    st.markdown("---")
+    st.subheader("📥 Exportar Análise")
+    
+    adv_result_serializable = {
+        'ticker': ticker_symbol,
+        'timestamp': pd.Timestamp.now().isoformat(),
+        'metrics': {k: (v if 'error' in v else {'price': v.get('price'), 'hitrate': v.get('hitrate')}) for k, v in bt['results'].items()},
+        'features_used': used_features,
+        'confidence_pct': conf_pct
+    }
+    
+    mem = io.BytesIO()
+    with zipfile.ZipFile(mem, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr('predictions.csv', preds_df.to_csv(index=False))
+        zf.writestr('metadata.json', json.dumps(adv_result_serializable, indent=4))
+    mem.seek(0)
+    
+    st.download_button(
+        label="Baixar Resultados da Análise (ZIP)",
+        data=mem,
+        file_name=f"analise_{ticker_symbol}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.zip",
+        mime="application/zip"
+    )
+
 
 st.markdown("---")
 st.subheader("📂 Importar e Comparar Previsões Exportadas")
@@ -446,30 +466,20 @@ if uploaded is not None:
             if st.button("Comparar Previsão Importada com Preços Reais"):
                 ticker_to_check = f"{meta.get('ticker')}.SA"
                 dates_to_check = pd.to_datetime(preds['Data'], dayfirst=True)
-                start_check = dates_to_check.min() - BDay(5)
-                end_check = dates_to_check.max() + BDay(5)
+                start_check, end_check = dates_to_check.min() - BDay(5), dates_to_check.max() + BDay(5)
                 
                 actual_data = yf.download(ticker_to_check, start=start_check, end=end_check, progress=False)
                 if not actual_data.empty:
-                    actual_data.index = pd.to_datetime(actual_data.index)
-                    comparison_list = []
-                    for _, row in preds.iterrows():
-                        pred_date = pd.to_datetime(row['Data'], dayfirst=True)
-                        actual_price = actual_data.get('Close', {}).get(pred_date)
-                        comparison_list.append({
-                            'Data Prevista': row['Data'],
-                            'Preço Previsto': row['Preço Previsto'],
-                            'Preço Real': actual_price
-                        })
-                    comp_df = pd.DataFrame(comparison_list).dropna()
-                    comp_df['Erro (R$)'] = comp_df['Preço Real'] - comp_df['Preço Previsto']
-                    comp_df['Erro (%)'] = (comp_df['Erro (R$)'] / comp_df['Preço Previsto'])
-                    st.dataframe(comp_df.style.format({
-                        'Preço Previsto': 'R$ {:,.2f}',
-                        'Preço Real': 'R$ {:,.2f}',
-                        'Erro (R$)': 'R$ {:,.2f}',
-                        'Erro (%)': '{:,.2%}'
-                    }))
+                    actual_data.index = pd.to_datetime(actual_data.index).normalize()
+                    preds['Data'] = pd.to_datetime(preds['Data'], dayfirst=True).dt.normalize()
+                    merged_df = pd.merge(preds, actual_data[['Close']], left_on='Data', right_index=True, how='left').rename(columns={'Close': 'Preço Real'})
+                    
+                    merged_df['Erro (R$)'] = merged_df['Preço Real'] - merged_df['Preço Previsto']
+                    merged_df['Erro (%)'] = (merged_df['Erro (R$)'] / merged_df['Preço Previsto'])
+                    st.dataframe(merged_df.style.format({
+                        'Preço Previsto': 'R$ {:,.2f}', 'Preço Real': 'R$ {:,.2f}',
+                        'Erro (R$)': 'R$ {:,.2f}', 'Erro (%)': '{:,.2%}'
+                    }, na_rep="N/A"))
                 else:
                     st.warning("Não foi possível baixar os dados reais para comparação.")
         else:
@@ -479,6 +489,7 @@ if uploaded is not None:
 
 # --- Rodapé ---
 st.markdown("---")
-last_update = pd.to_datetime(data.index[-1]).strftime('%d/%m/%Y')
+# CORREÇÃO DO TIMESTAMP
+last_update = pd.to_datetime(data.index[-1]).strftime('%d/%m/%Y %H:%M:%S')
 st.caption(f"Última atualização dos preços: **{last_update}** — Dados: Yahoo Finance.")
 st.markdown("<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)

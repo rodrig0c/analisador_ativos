@@ -41,7 +41,7 @@ except ImportError:
     st.sidebar.warning("TensorFlow não instalado. Para usar o modelo LSTM, execute: pip install tensorflow")
 
 # --- UI ---
-st.title('📊 Analisador de Ativos Avançado')
+st.title('📊 Assetz - Analisador de Ativos Avançado')
 st.write('Um projeto de portfólio para análise preditiva de ativos, com foco em explicabilidade e backtesting de performance.')
 
 st.sidebar.header('⚙️ Parâmetros')

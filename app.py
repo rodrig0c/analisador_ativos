@@ -1,7 +1,7 @@
 # app.py
 # Versão Final com:
-# - Remoção da coluna "Erro" da tabela de backtest.
-# - Adição de cores na tabela de comparação de resultados (Previsto vs. Real).
+# - Ajustes de interface na seção "Importar e Comparar" para fontes maiores e layout compacto.
+# - Destaque com cores para as colunas de erro (R$ e %) na tabela de comparação.
 
 import streamlit as st
 import pandas as pd
@@ -257,31 +257,23 @@ if data.empty or len(data) < 1:
     st.stop()
 data = calculate_indicators(data)
 
-# Substitua o bloco "Visão Geral do Ativo" pelo código abaixo
-
 st.subheader('📈 Visão Geral do Ativo')
-
-# --- NOVA LÓGICA PARA BUSCAR PREÇO ATUALIZADO ---
-# Busca o dado intraday mais recente (com delay de ~15min)
 try:
-    live_data = yf.Ticker(ticker).history(period='1d', interval='1m')
+    live_data = yf.Ticker(ticker).history(period='1d', interval='5m')
     if not live_data.empty:
         last_price = live_data['Close'].iloc[-1]
-    else: # Fallback para o fechamento do dia anterior se não houver dado intraday
+    else:
         last_price = data['Close'].iloc[-1]
 except Exception:
-    last_price = data['Close'].iloc[-1] # Fallback em caso de erro
-
+    last_price = data['Close'].iloc[-1]
 prev_price = data['Close'].iloc[-2] if len(data) >= 2 else last_price
 price_change = last_price - prev_price
 percent_change = (price_change / prev_price * 100) if prev_price != 0 else 0.0
-
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("🏢 Empresa", company_name)
 c2.metric("💹 Ticker", ticker_symbol)
 c3.metric("💰 Último Preço", f"R$ {last_price:.2f}")
 c4.metric("📊 Variação (vs. Fech. Anterior)", f"{price_change:+.2f} R$", f"{percent_change:+.2f}%")
-
 st.markdown("---")
 
 tab1, tab2, tab3 = st.tabs(["Preço e Indicadores", "Volatilidade", "Comparativo com IBOVESPA"])
@@ -294,20 +286,11 @@ with tab1:
     else:
         fig = go.Figure()
         
-        fig.add_trace(go.Scatter(
-            x=data.index[view_slice], y=data['BB_Superior'][view_slice],
-            line=dict(width=0), showlegend=False, name='Banda Superior'
-        ))
-        fig.add_trace(go.Scatter(
-            x=data.index[view_slice], y=data['BB_Inferior'][view_slice],
-            fill='tonexty', fillcolor='rgba(0, 176, 246, 0.2)',
-            line=dict(width=0), name='Bandas de Bollinger', showlegend=True
-        ))
-        
+        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['BB_Superior'][view_slice], line=dict(width=0), showlegend=False, name='Banda Superior'))
+        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['BB_Inferior'][view_slice], fill='tonexty', fillcolor='rgba(0, 176, 246, 0.2)', line=dict(width=0), name='Bandas de Bollinger', showlegend=True))
         fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['MM_Longa'][view_slice], name='Média Móvel 50 Dias', line=dict(color='purple', dash='dash')))
         fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['MM_Curta'][view_slice], name='Banda Média (MM 20 Dias)', line=dict(color='yellow', width=1.5)))
         fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['Close'][view_slice], name='Preço de Fechamento', line=dict(color='cyan', width=2)))
-        
         st.plotly_chart(fig, use_container_width=True)
         
         st.subheader('Índice de Força Relativa (RSI)')
@@ -367,24 +350,16 @@ if 'advanced_result' in st.session_state and st.session_state['advanced_result']
     rows = []
     for k, v in metrics.items():
         if 'error' in v:
-            # Se deu erro, preenche métricas com None para virar N/A
             rows.append({'Modelo': k, 'MAE (R$)': None, 'RMSE (R$)': None, 'MAPE (%)': None, 'HitRate': None})
         else:
             price = v.get('price', {})
-            rows.append({
-                'Modelo': k,
-                'MAE (R$)': price.get('MAE'),
-                'RMSE (R$)': price.get('RMSE'),
-                'MAPE (%)': price.get('MAPE') * 100 if price.get('MAPE') is not None else None,
-                'HitRate': v.get('hitrate')
-            })
+            rows.append({'Modelo': k, 'MAE (R$)': price.get('MAE'), 'RMSE (R$)': price.get('RMSE'),
+                         'MAPE (%)': price.get('MAPE') * 100 if price.get('MAPE') is not None else None, 'HitRate': v.get('hitrate')})
     metrics_df = pd.DataFrame(rows)
 
     st.subheader("Resultados do Backtest (Período de Teste: 20% dos dados)")
-    sty = metrics_df.style.format({
-        'MAE (R$)': "R$ {:,.2f}", 'RMSE (R$)': "R$ {:,.2f}",
-        'MAPE (%)': "{:.2f}%", 'HitRate': "{:.2%}",
-    }, na_rep="N/A")
+    sty = metrics_df.style.format({'MAE (R$)': "R$ {:,.2f}", 'RMSE (R$)': "R$ {:,.2f}",
+                                   'MAPE (%)': "{:.2f}%", 'HitRate': "{:.2%}"}, na_rep="N/A")
     st.dataframe(sty, use_container_width=True)
 
     ensemble_mape = metrics.get('Ensemble', {}).get('price', {}).get('MAPE')
@@ -405,11 +380,8 @@ if 'advanced_result' in st.session_state and st.session_state['advanced_result']
         pred_returns, real_returns, dates = bt['ensemble_ret'], bt['y_test_ret'], bt['df_plot']['Data']
         strategy_daily_returns = np.where(pred_returns > 0, real_returns, 0)
         initial_capital = 10000
-        plot_df = pd.DataFrame({
-            'Data': dates,
-            'Estratégia do Modelo': (1 + strategy_daily_returns).cumprod() * initial_capital,
-            'Comprar e Segurar (Buy & Hold)': (1 + real_returns).cumprod() * initial_capital
-        })
+        plot_df = pd.DataFrame({'Data': dates, 'Estratégia do Modelo': (1 + strategy_daily_returns).cumprod() * initial_capital,
+                                'Comprar e Segurar (Buy & Hold)': (1 + real_returns).cumprod() * initial_capital})
         fig_sim = go.Figure()
         fig_sim.add_trace(go.Scatter(x=plot_df['Data'], y=plot_df['Estratégia do Modelo'], name='Estratégia do Modelo', line=dict(color='cyan')))
         fig_sim.add_trace(go.Scatter(x=plot_df['Data'], y=plot_df['Comprar e Segurar (Buy & Hold)'], name='Buy & Hold', line=dict(color='gray', dash='dash')))
@@ -454,8 +426,22 @@ if uploaded is not None:
             meta = json.loads(z.read('metadata.json'))
             preds = pd.read_csv(io.BytesIO(z.read('predictions.csv')))
             st.write(f"Análise importada para o ticker **{meta.get('ticker')}** de **{meta.get('timestamp')}**.")
-            st.dataframe(preds)
             
+            # --- NOVO DISPLAY CUSTOMIZADO PARA PREVISÕES IMPORTADAS ---
+            st.markdown("""
+            <div style="display: flex; justify-content: space-between; padding: 4px 8px; color: #AAA; font-size: 14px; font-weight: 600;">
+                <div style="width: 50%;">Data</div>
+                <div style="width: 50%; text-align: right;">Preço Previsto</div>
+            </div>
+            """, unsafe_allow_html=True)
+            for r in preds.to_dict(orient='records'):
+                st.markdown(f"""
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-radius: 6px; margin-bottom: 4px; background: #0b1220;">
+                    <div style="color:#ddd; font-size:18px;">{r['Data']}</div>
+                    <div style="color:#00BFFF; font-size:22px; font-weight:700;">R$ {r['Preço Previsto']:,.2f}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
             if st.button("Comparar Previsão Importada com Preços Reais"):
                 ticker_to_check = f"{meta.get('ticker')}.SA"
                 dates_to_check = pd.to_datetime(preds['Data'], dayfirst=True)
@@ -473,20 +459,41 @@ if uploaded is not None:
                     merged_df['Erro (R$)'] = merged_df['Preço Real'] - merged_df['Preço Previsto']
                     merged_df['Erro (%)'] = (merged_df['Erro (R$)'] / merged_df['Preço Previsto'])
                     
-                    # --- NOVA FUNÇÃO DE ESTILO PARA A TABELA DE COMPARAÇÃO ---
-                    def style_error_percent(val):
-                        if pd.isna(val): return ''
-                        color = '#E74C3C' # Vermelho para erros grandes
-                        if abs(val) < 0.05: color = '#F1C40F' # Amarelo para erros médios
-                        if abs(val) < 0.02: color = '#2ECC71' # Verde para erros pequenos
-                        return f'color: {color}'
-
-                    styled_df = merged_df.style.format({
-                        'Preço Previsto': 'R$ {:,.2f}', 'Preço Real': 'R$ {:,.2f}',
-                        'Erro (R$)': 'R$ {:,.2f}', 'Erro (%)': '{:,.2%}'
-                    }, na_rep="N/A").apply(lambda s: s.map(style_error_percent), subset=['Erro (%)'])
+                    st.markdown("---")
+                    st.write("Resultado da Comparação:")
                     
-                    st.dataframe(styled_df)
+                    # --- NOVO DISPLAY CUSTOMIZADO PARA TABELA DE COMPARAÇÃO ---
+                    header_html = """
+                    <div style="display: grid; grid-template-columns: 20% 20% 20% 20% 20%; padding: 4px 8px; color: #AAA; font-size: 14px; font-weight: 600;">
+                        <div>Data</div><div>Preço Previsto</div><div>Preço Real</div><div>Erro (R$)</div><div>Erro (%)</div>
+                    </div>
+                    """
+                    st.markdown(header_html, unsafe_allow_html=True)
+
+                    for r in merged_df.to_dict(orient='records'):
+                        if pd.isna(r['Preço Real']):
+                            real_str, err_r_str, err_p_str = "N/A", "N/A", "N/A"
+                            color = "#AAA"
+                        else:
+                            real_str = f"R$ {r['Preço Real']:,.2f}"
+                            err_r_str = f"R$ {r['Erro (R$)']:,.2f}"
+                            err_p_str = f"{r['Erro (%)']:,.2%}"
+                            
+                            err_val = r['Erro (%)']
+                            color = '#E74C3C' # Vermelho
+                            if abs(err_val) < 0.05: color = '#F1C40F' # Amarelo
+                            if abs(err_val) < 0.02: color = '#2ECC71' # Verde
+                        
+                        row_html = f"""
+                        <div style="display: grid; grid-template-columns: 20% 20% 20% 20% 20%; align-items: center; padding: 8px 8px; border-radius: 6px; margin-bottom: 4px; background: #0b1220; font-size: 18px;">
+                            <div style="color: #ddd;">{pd.to_datetime(r['Data']).strftime('%d/%m/%Y')}</div>
+                            <div style="color: #00BFFF; font-weight: 700;">R$ {r['Preço Previsto']:,.2f}</div>
+                            <div style="color: #00BFFF; font-weight: 700;">{real_str}</div>
+                            <div style="color: {color}; font-weight: 700;">{err_r_str}</div>
+                            <div style="color: {color}; font-weight: 700;">{err_p_str}</div>
+                        </div>
+                        """
+                        st.markdown(row_html, unsafe_allow_html=True)
                 else:
                     st.warning("Não foi possível baixar os dados reais para comparação.")
         else:
@@ -494,10 +501,8 @@ if uploaded is not None:
     except Exception as e:
         st.error(f"Ocorreu um erro ao processar o arquivo ZIP: {e}")
 
-
 # --- Rodapé ---
 st.markdown("---")
-# Captura a data e hora exatas da execução para refletir a atualização real da consulta
 horario_consulta = pd.Timestamp.now(tz='America/Sao_Paulo').strftime('%d/%m/%Y %H:%M:%S')
 st.caption(f"Última consulta dos dados: **{horario_consulta}** — Dados: Yahoo Finance.")
 st.markdown("<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)

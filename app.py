@@ -363,9 +363,9 @@ if 'advanced_result' in st.session_state and st.session_state['advanced_result']
         var_color = "#2ECC71" if r['Variação'] > 0 else "#E74C3C"
         st.markdown(f"<div style='display:flex;justify-content:space-between;align-items:center;padding:8px 6px;border-radius:6px;margin-bottom:6px;background:#0b1220'><div style='color:#ddd;font-size:16px'>{r['Data']}</div><div style='color:#00BFFF;font-size:28px;font-weight:900'>R$ {r['Preço Previsto']:,.2f}</div><div style='color:{var_color};font-size:16px'>{r['Variação']:+.2%}</div></div>", unsafe_allow_html=True)
 
+
 # Rodapé
 st.markdown("---")
-st.caption(f"Última atualização dos preços: **{pd.to_datetime(data.index[-1]).strftime('%d/%m/%Y')}** — Dados: Yahoo Finance.")
-st.markdown("<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)
+last_update = pd.to_datetime(data.index[-1]).strftime('%d/%m/%Y') # <-- ADICIONE ESTA LINHA
 st.caption(f"Última atualização dos preços: **{last_update}** — Dados: Yahoo Finance.")
 st.markdown("<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)

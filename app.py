@@ -1,6 +1,8 @@
 # app.py
-# Versão 100% completa e corrigida, restaurando todas as funcionalidades originais
-# e mantendo as melhorias (XGBoost, Feature Importance, Simulação de Rentabilidade).
+# Versão com:
+# - Correção no gráfico das Bandas de Bollinger para exibição de área preenchida.
+# - Remoção da seção de análise simples de volatilidade.
+# - Manutenção de todas as outras funcionalidades.
 
 import streamlit as st
 import pandas as pd
@@ -269,7 +271,6 @@ c3.metric("💰 Último Preço", f"R$ {last_price:.2f}")
 c4.metric("📊 Variação (Dia)", f"{price_change:+.2f} R$", f"{percent_change:+.2f}%")
 st.markdown("---")
 
-# --- SEÇÃO RESTAURADA: Abas com gráficos descritivos ---
 tab1, tab2, tab3 = st.tabs(["Preço e Indicadores", "Volatilidade", "Comparativo com IBOVESPA"])
 view_slice = slice(-viz_days, None) if viz_days is not None else slice(None)
 
@@ -279,12 +280,34 @@ with tab1:
         st.warning(f"Dados insuficientes para gráficos históricos (mínimo {MIN_DAYS_CHARTS} dias). Histórico: {len(data)} dias.")
     else:
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['Close'][view_slice], name='Preço de Fechamento'))
-        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['MM_Curta'][view_slice], name='Média Móvel 20 Dias'))
-        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['MM_Longa'][view_slice], name='Média Móvel 50 Dias'))
-        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['BB_Superior'][view_slice], name='Banda de Bollinger Superior', line=dict(color='rgba(0,0,0,0.2)')))
-        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['BB_Inferior'][view_slice], name='Banda de Bollinger Inferior', fill='tonexty', line=dict(color='rgba(0,0,0,0.2)')))
+        
+        # --- CORREÇÃO DAS BANDAS DE BOLLINGER ---
+        # Adiciona as bandas primeiro para que o preenchimento funcione corretamente
+        # A linha em si é invisível (width=0), apenas a área preenchida é mostrada.
+        fig.add_trace(go.Scatter(
+            x=data.index[view_slice],
+            y=data['BB_Superior'][view_slice],
+            line=dict(width=0),
+            showlegend=False,
+            name='Banda Superior'
+        ))
+        fig.add_trace(go.Scatter(
+            x=data.index[view_slice],
+            y=data['BB_Inferior'][view_slice],
+            fill='tonexty',
+            fillcolor='rgba(173, 216, 230, 0.3)', # Cor de preenchimento lightblue semitransparente
+            line=dict(width=0),
+            showlegend=False,
+            name='Banda Inferior'
+        ))
+
+        # Adiciona as outras linhas sobre as bandas
+        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['Close'][view_slice], name='Preço de Fechamento', line=dict(color='white')))
+        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['MM_Curta'][view_slice], name='Média Móvel 20 Dias', line=dict(color='cyan')))
+        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['MM_Longa'][view_slice], name='Média Móvel 50 Dias', line=dict(color='magenta')))
+
         st.plotly_chart(fig, use_container_width=True)
+        
         st.subheader('Índice de Força Relativa (RSI)')
         fig_rsi = px.line(data[view_slice], x=data.index[view_slice], y='RSI', title='RSI')
         fig_rsi.add_hline(y=70, line_dash="dash", annotation_text="Sobrecompra")
@@ -318,31 +341,8 @@ with tab3:
         st.plotly_chart(fig_comp, use_container_width=True)
 st.markdown("---")
 
-# --- SEÇÃO RESTAURADA: Modelo Simples de Volatilidade ---
-st.subheader('🧠 Volatilidade — Modelo Simples (RandomForest)')
-if st.button('Executar Previsão de Volatilidade (Simples)', key='vol_simple'):
-    df_vol = data[['Volatility']].copy().dropna()
-    if len(df_vol) < 30:
-        st.warning("Dados insuficientes para previsão de volatilidade (mínimo 30 dias).")
-    else:
-        for lag in range(1, 6): df_vol[f'vol_lag_{lag}'] = df_vol['Volatility'].shift(lag)
-        df_vol.dropna(inplace=True)
-        Xv, yv = df_vol.drop('Volatility', axis=1), df_vol['Volatility']
-        model_vol = RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
-        model_vol.fit(Xv, yv)
-        pred_vol = float(model_vol.predict(Xv.iloc[-1:].values)[0])
-        next_day = (pd.to_datetime(data.index[-1]) + BDay(1)).strftime('%d/%m/%Y')
-        st.session_state['vol_result'] = {'pred_vol': pred_vol, 'date': next_day}
-if 'vol_result' in st.session_state and st.session_state['vol_result']:
-    vol = st.session_state['vol_result']; v = vol['pred_vol']
-    if v >= 0.5: label, color = "ALTA VOLATILIDADE", "#E74C3C"
-    elif v >= 0.25: label, color = "VOLATILIDADE MÉDIA", "#F1C40F"
-    else: label, color = "BAIXA VOLATILIDADE", "#2ECC71"
-    st.markdown(f"<div style='background:#0b1220;padding:10px;border-radius:8px;display:flex;gap:16px;align-items:center'><div style='font-size:20px;color:{color};font-weight:800'>{label}</div><div style='color:#ddd;font-size:18px'>Data prevista: <strong>{vol['date']}</strong></div><div style='color:#ddd;font-size:18px'>Valor previsto: <strong>{v:.4f}</strong></div></div>", unsafe_allow_html=True)
-st.markdown("---")
+# --- SEÇÃO REMOVIDA: Análise Simples de Volatilidade ---
 
-
-# --- Seção de Análise Avançada (Mantida e Corrigida) ---
 st.subheader('🔮 Previsão Avançada e Análise de Performance')
 st.write(f"Requer no mínimo {MIN_DAYS_ADVANCED} dias de histórico. Modelos usados: Random Forest, Gradient Boosting, SVR, Neural Net, XGBoost (se instalado) e LSTM (se instalado).")
 
@@ -431,7 +431,6 @@ if 'advanced_result' in st.session_state and st.session_state['advanced_result']
         var_color = "#2ECC71" if r['Variação'] > 0 else "#E74C3C"
         st.markdown(f"<div style='display:flex;justify-content:space-between;align-items:center;padding:8px 6px;border-radius:6px;margin-bottom:6px;background:#0b1220'><div style='color:#ddd;font-size:16px'>{r['Data']}</div><div style='color:#00BFFF;font-size:28px;font-weight:900'>R$ {r['Preço Previsto']:,.2f}</div><div style='color:{var_color};font-size:16px'>{r['Variação']:+.2%}</div></div>", unsafe_allow_html=True)
 
-# --- SEÇÃO RESTAURADA: Importar e Comparar ---
 st.markdown("---")
 st.subheader("📂 Importar e Comparar Previsões Exportadas")
 uploaded = st.file_uploader("Carregar ZIP de análise exportada por esta ferramenta", type=["zip"])

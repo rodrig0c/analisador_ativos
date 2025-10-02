@@ -451,6 +451,7 @@ if 'advanced_result' in st.session_state and st.session_state['advanced_result']
     )
 
 
+# --- SEÇÃO RESTAURADA: Importar e Comparar (COM CORREÇÃO) ---
 st.markdown("---")
 st.subheader("📂 Importar e Comparar Previsões Exportadas")
 uploaded = st.file_uploader("Carregar ZIP de análise exportada por esta ferramenta", type=["zip"])
@@ -469,6 +470,13 @@ if uploaded is not None:
                 start_check, end_check = dates_to_check.min() - BDay(5), dates_to_check.max() + BDay(5)
                 
                 actual_data = yf.download(ticker_to_check, start=start_check, end=end_check, progress=False)
+
+                # --- CORREÇÃO ADICIONADA AQUI ---
+                # Garante que o cabeçalho das colunas seja simples, evitando o erro de MultiIndex.
+                if isinstance(actual_data.columns, pd.MultiIndex):
+                    actual_data.columns = actual_data.columns.get_level_values(0)
+                # --- FIM DA CORREÇÃO ---
+
                 if not actual_data.empty:
                     actual_data.index = pd.to_datetime(actual_data.index).normalize()
                     preds['Data'] = pd.to_datetime(preds['Data'], dayfirst=True).dt.normalize()

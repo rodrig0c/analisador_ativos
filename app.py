@@ -1,9 +1,7 @@
-
 # app.py
 # Versão Final com:
-# - Legenda corrigida para as Bandas de Bollinger.
-# - Funcionalidade de exportar a análise avançada (para importação futura) restaurada.
-# - Timestamp da última cotação com horas, minutos e segundos.
+# - Remoção da coluna "Erro" da tabela de backtest.
+# - Adição de cores na tabela de comparação de resultados (Previsto vs. Real).
 
 import streamlit as st
 import pandas as pd
@@ -281,30 +279,19 @@ with tab1:
     else:
         fig = go.Figure()
         
-        # 1. Adiciona a área das Bandas de Bollinger primeiro
         fig.add_trace(go.Scatter(
             x=data.index[view_slice], y=data['BB_Superior'][view_slice],
             line=dict(width=0), showlegend=False, name='Banda Superior'
         ))
         fig.add_trace(go.Scatter(
             x=data.index[view_slice], y=data['BB_Inferior'][view_slice],
-            fill='tonexty', fillcolor='rgba(0, 176, 246, 0.2)',  # Cor azulada semitransparente
+            fill='tonexty', fillcolor='rgba(0, 176, 246, 0.2)',
             line=dict(width=0), name='Bandas de Bollinger', showlegend=True
         ))
-
-        # 2. Adiciona as linhas de tendência e preço sobre a área das bandas
-        fig.add_trace(go.Scatter(
-            x=data.index[view_slice], y=data['MM_Longa'][view_slice], 
-            name='Média Móvel 50 Dias', line=dict(color='purple', dash='dash') # Linha de tendência mais longa
-        ))
-        fig.add_trace(go.Scatter(
-            x=data.index[view_slice], y=data['MM_Curta'][view_slice], 
-            name='Banda Média (MM 20 Dias)', line=dict(color='yellow', width=1.5) # <-- DESTAQUE PARA A BANDA MÉDIA
-        ))
-        fig.add_trace(go.Scatter(
-            x=data.index[view_slice], y=data['Close'][view_slice], 
-            name='Preço de Fechamento', line=dict(color='cyan', width=2) # Linha de preço principal
-        ))
+        
+        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['MM_Longa'][view_slice], name='Média Móvel 50 Dias', line=dict(color='purple', dash='dash')))
+        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['MM_Curta'][view_slice], name='Banda Média (MM 20 Dias)', line=dict(color='yellow', width=1.5)))
+        fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['Close'][view_slice], name='Preço de Fechamento', line=dict(color='cyan', width=2)))
         
         st.plotly_chart(fig, use_container_width=True)
         
@@ -313,6 +300,7 @@ with tab1:
         fig_rsi.add_hline(y=70, line_dash="dash", annotation_text="Sobrecompra")
         fig_rsi.add_hline(y=30, line_dash="dash", annotation_text="Sobrevenda")
         st.plotly_chart(fig_rsi, use_container_width=True)
+
 with tab2:
     st.subheader('Volatilidade (janela de 30 dias)')
     if len(data) < MIN_DAYS_CHARTS:
@@ -363,18 +351,18 @@ if 'advanced_result' in st.session_state and st.session_state['advanced_result']
     
     rows = []
     for k, v in metrics.items():
-        row_data = {'Modelo': k, 'MAE (R$)': None, 'RMSE (R$)': None, 'MAPE (%)': None, 'HitRate': None, 'Erro': ''}
         if 'error' in v:
-            row_data['Erro'] = v['error']
+            # Se deu erro, preenche métricas com None para virar N/A
+            rows.append({'Modelo': k, 'MAE (R$)': None, 'RMSE (R$)': None, 'MAPE (%)': None, 'HitRate': None})
         else:
             price = v.get('price', {})
-            row_data.update({
+            rows.append({
+                'Modelo': k,
                 'MAE (R$)': price.get('MAE'),
                 'RMSE (R$)': price.get('RMSE'),
                 'MAPE (%)': price.get('MAPE') * 100 if price.get('MAPE') is not None else None,
                 'HitRate': v.get('hitrate')
             })
-        rows.append(row_data)
     metrics_df = pd.DataFrame(rows)
 
     st.subheader("Resultados do Backtest (Período de Teste: 20% dos dados)")
@@ -425,33 +413,22 @@ if 'advanced_result' in st.session_state and st.session_state['advanced_result']
         var_color = "#2ECC71" if r['Variação'] > 0 else "#E74C3C"
         st.markdown(f"<div style='display:flex;justify-content:space-between;align-items:center;padding:8px 6px;border-radius:6px;margin-bottom:6px;background:#0b1220'><div style='color:#ddd;font-size:16px'>{r['Data']}</div><div style='color:#00BFFF;font-size:28px;font-weight:900'>R$ {r['Preço Previsto']:,.2f}</div><div style='color:{var_color};font-size:16px'>{r['Variação']:+.2%}</div></div>", unsafe_allow_html=True)
     
-    # --- FUNCIONALIDADE DE EXPORTAÇÃO RESTAURADA ---
     st.markdown("---")
     st.subheader("📥 Exportar Análise")
-    
     adv_result_serializable = {
-        'ticker': ticker_symbol,
-        'timestamp': pd.Timestamp.now().isoformat(),
+        'ticker': ticker_symbol, 'timestamp': pd.Timestamp.now().isoformat(),
         'metrics': {k: (v if 'error' in v else {'price': v.get('price'), 'hitrate': v.get('hitrate')}) for k, v in bt['results'].items()},
-        'features_used': used_features,
-        'confidence_pct': conf_pct
+        'features_used': used_features, 'confidence_pct': conf_pct
     }
-    
     mem = io.BytesIO()
     with zipfile.ZipFile(mem, mode='w', compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr('predictions.csv', preds_df.to_csv(index=False))
         zf.writestr('metadata.json', json.dumps(adv_result_serializable, indent=4))
     mem.seek(0)
-    
-    st.download_button(
-        label="Baixar Resultados da Análise (ZIP)",
-        data=mem,
-        file_name=f"analise_{ticker_symbol}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.zip",
-        mime="application/zip"
-    )
+    st.download_button(label="Baixar Resultados da Análise (ZIP)", data=mem,
+        file_name=f"analise_{ticker_symbol}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.zip", mime="application/zip")
 
 
-# --- SEÇÃO RESTAURADA: Importar e Comparar (COM CORREÇÃO) ---
 st.markdown("---")
 st.subheader("📂 Importar e Comparar Previsões Exportadas")
 uploaded = st.file_uploader("Carregar ZIP de análise exportada por esta ferramenta", type=["zip"])
@@ -470,12 +447,8 @@ if uploaded is not None:
                 start_check, end_check = dates_to_check.min() - BDay(5), dates_to_check.max() + BDay(5)
                 
                 actual_data = yf.download(ticker_to_check, start=start_check, end=end_check, progress=False)
-
-                # --- CORREÇÃO ADICIONADA AQUI ---
-                # Garante que o cabeçalho das colunas seja simples, evitando o erro de MultiIndex.
                 if isinstance(actual_data.columns, pd.MultiIndex):
                     actual_data.columns = actual_data.columns.get_level_values(0)
-                # --- FIM DA CORREÇÃO ---
 
                 if not actual_data.empty:
                     actual_data.index = pd.to_datetime(actual_data.index).normalize()
@@ -484,10 +457,21 @@ if uploaded is not None:
                     
                     merged_df['Erro (R$)'] = merged_df['Preço Real'] - merged_df['Preço Previsto']
                     merged_df['Erro (%)'] = (merged_df['Erro (R$)'] / merged_df['Preço Previsto'])
-                    st.dataframe(merged_df.style.format({
+                    
+                    # --- NOVA FUNÇÃO DE ESTILO PARA A TABELA DE COMPARAÇÃO ---
+                    def style_error_percent(val):
+                        if pd.isna(val): return ''
+                        color = '#E74C3C' # Vermelho para erros grandes
+                        if abs(val) < 0.05: color = '#F1C40F' # Amarelo para erros médios
+                        if abs(val) < 0.02: color = '#2ECC71' # Verde para erros pequenos
+                        return f'color: {color}'
+
+                    styled_df = merged_df.style.format({
                         'Preço Previsto': 'R$ {:,.2f}', 'Preço Real': 'R$ {:,.2f}',
                         'Erro (R$)': 'R$ {:,.2f}', 'Erro (%)': '{:,.2%}'
-                    }, na_rep="N/A"))
+                    }, na_rep="N/A").apply(lambda s: s.map(style_error_percent), subset=['Erro (%)'])
+                    
+                    st.dataframe(styled_df)
                 else:
                     st.warning("Não foi possível baixar os dados reais para comparação.")
         else:
@@ -497,7 +481,6 @@ if uploaded is not None:
 
 # --- Rodapé ---
 st.markdown("---")
-# CORREÇÃO DO TIMESTAMP
 last_update = pd.to_datetime(data.index[-1]).strftime('%d/%m/%Y %H:%M:%S')
 st.caption(f"Última atualização dos preços: **{last_update}** — Dados: Yahoo Finance.")
 st.markdown("<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo | rodrigocosta@usp.br</p>", unsafe_allow_html=True)

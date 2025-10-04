@@ -1,3 +1,9 @@
+# app.py
+# Versão Final com:
+# - Ajustes de interface na seção "Importar e Comparar" para fontes maiores e layout compacto.
+# - Destaque com cores para as colunas de erro (R$ e %) na tabela de comparação.
+# - [Corrigido] Gráfico de variação da cotação do dia com range do eixo Y dinâmico.
+# - [NOVO] Eixo X do gráfico intraday condensado para melhor visualização (máx. 5 marcações).
 
 import streamlit as st
 import pandas as pd
@@ -261,8 +267,6 @@ try:
     last_price_info = ticker_obj.fast_info.get('lastPrice')
     
     # Tenta obter dados intraday com intervalo de 1 minuto
-    # O período '1d' com '1m' pode falhar fora do horário de pregão ou para tickers sem muita liquidez,
-    # então usaremos um 'try-except' mais robusto aqui.
     try:
         live_data = ticker_obj.history(period='1d', interval='1m')
         if live_data.empty: # Fallback para 5m se 1m não retornar dados
@@ -326,14 +330,12 @@ if not live_data.empty and len(live_data) > 1:
         annotation_position="bottom right"
     )
 
-    # --- AJUSTE O RANGE DO EIXO Y DINAMICAMENTE ---
+    # AJUSTE O RANGE DO EIXO Y DINAMICAMENTE
     min_price_day = live_data['Close'].min()
     max_price_day = live_data['Close'].max()
     
-    # Adiciona uma pequena margem (ex: 0.5% ou 0.10 centavos) para o zoom automático
-    # Garante que o prev_price também seja considerado no range para evitar cortes
-    min_val = min(min_price_day, prev_price) * 0.995 - 0.05 # Ajuste para ter margem inferior
-    max_val = max(max_price_day, prev_price) * 1.005 + 0.05 # Ajuste para ter margem superior
+    min_val = min(min_price_day, prev_price) * 0.995 - 0.05
+    max_val = max(max_price_day, prev_price) * 1.005 + 0.05
 
     fig_live.update_layout(
         title_text="<b>Variação da Cotação no Dia</b>",
@@ -345,9 +347,12 @@ if not live_data.empty and len(live_data) > 1:
         margin=dict(l=40, r=40, t=50, b=10),
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
-        yaxis=dict(gridcolor='rgba(255, 255, 255, 0.1)', range=[min_val, max_val]), # AQUI É A MUDANÇA
-        xaxis=dict(gridcolor='rgba(255, 255, 255, 0.1)',
-                   tickformat="%H:%M"), # Formata o eixo X para mostrar apenas hora e minuto
+        yaxis=dict(gridcolor='rgba(255, 255, 255, 0.1)', range=[min_val, max_val]),
+        xaxis=dict(
+            gridcolor='rgba(255, 255, 255, 0.1)',
+            tickformat="%H:%M",
+            nticks=5  # --- AQUI É A MUDANÇA PARA CONDENSAR O EIXO X ---
+        ),
         font=dict(color='white')
     )
     st.plotly_chart(fig_live, use_container_width=True)

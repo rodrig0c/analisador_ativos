@@ -1,9 +1,8 @@
-
 # app.py
 # Versão Final com:
-# - [Corrigido] Gráfico de variação da cotação do dia com range do eixo Y dinâmico e eixo X condensado.
-# - [NOVO] Todos os gráficos foram comprimidos horizontalmente para melhor proporção visual.
-# - [NOVO] As fontes dos eixos de todos os gráficos foram aumentadas para melhor legibilidade.
+# - [Corrigido] SyntaxError por argumentos repetidos na configuração dos gráficos.
+# - Gráficos comprimidos horizontalmente para melhor proporção visual.
+# - Fontes dos eixos dos gráficos aumentadas para melhor legibilidade.
 
 import streamlit as st
 import pandas as pd
@@ -318,21 +317,22 @@ if not live_data.empty and len(live_data) > 1:
 
     fig_live.update_layout(
         title_text="<b>Variação da Cotação no Dia</b>", title_x=0.5,
-        yaxis_title="Preço (R$)", showlegend=False, height=400,
+        showlegend=False, height=400,
         margin=dict(l=40, r=40, t=50, b=10),
         plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
         yaxis=dict(
+            title="Preço (R$)",
             gridcolor='rgba(255, 255, 255, 0.1)', range=[min_val, max_val],
             title_font=dict(size=14), tickfont=dict(size=12)
         ),
         xaxis=dict(
+            title=None,
             gridcolor='rgba(255, 255, 255, 0.1)', tickformat="%H:%M", nticks=5,
             title_font=dict(size=14), tickfont=dict(size=12)
         ),
         font=dict(color='white')
     )
     
-    # Colunas para comprimir o gráfico
     _, col_grafico, _ = st.columns([1, 3, 1])
     with col_grafico:
         st.plotly_chart(fig_live, use_container_width=True)
@@ -359,25 +359,23 @@ with tab1:
         fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['Close'][view_slice], name='Preço de Fechamento', line=dict(color='cyan', width=2)))
         
         fig.update_layout(
-            xaxis_title="Data", yaxis_title="Preço (R$)",
-            xaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
-            yaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
-            height=450
+            height=450,
+            xaxis=dict(title="Data", title_font=dict(size=14), tickfont=dict(size=12)),
+            yaxis=dict(title="Preço (R$)", title_font=dict(size=14), tickfont=dict(size=12))
         )
         _, col_graf, _ = st.columns([1, 3, 1])
         with col_graf:
             st.plotly_chart(fig, use_container_width=True)
         
         st.subheader('Índice de Força Relativa (RSI)')
-        fig_rsi = px.line(data[view_slice], x=data.index[view_slice], y='RSI', title='RSI')
+        fig_rsi = px.line(data[view_slice], x=data.index[view_slice], y='RSI', title='Índice de Força Relativa (RSI)')
         fig_rsi.add_hline(y=70, line_dash="dash", annotation_text="Sobrecompra")
         fig_rsi.add_hline(y=30, line_dash="dash", annotation_text="Sobrevenda")
         
         fig_rsi.update_layout(
-            xaxis_title="Data", yaxis_title="RSI",
-            xaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
-            yaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
-            height=400
+            height=400,
+            xaxis=dict(title="Data", title_font=dict(size=14), tickfont=dict(size=12)),
+            yaxis=dict(title="RSI", title_font=dict(size=14), tickfont=dict(size=12))
         )
         _, col_graf_rsi, _ = st.columns([1, 3, 1])
         with col_graf_rsi:
@@ -388,12 +386,11 @@ with tab2:
     if len(data) < MIN_DAYS_CHARTS:
         st.info("Volatilidade não disponível por dados históricos insuficientes.")
     else:
-        fig_vol = px.line(data[view_slice], x=data.index[view_slice], y='Volatility', title='Volatilidade Anualizada')
+        fig_vol = px.line(data[view_slice], x=data.index[view_slice], y='Volatility', title='Volatilidade Anualizada (Janela de 30 dias)')
         fig_vol.update_layout(
-            xaxis_title="Data", yaxis_title="Volatilidade",
-            xaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
-            yaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
-            height=400
+            height=400,
+            xaxis=dict(title="Data", title_font=dict(size=14), tickfont=dict(size=12)),
+            yaxis=dict(title="Volatilidade", title_font=dict(size=14), tickfont=dict(size=12))
         )
         _, col_graf, _ = st.columns([1, 3, 1])
         with col_graf:
@@ -417,10 +414,9 @@ with tab3:
         })
         fig_comp = px.line(comp_df, x=comp_df.index, y=comp_df.columns, title='Performance Normalizada (base 1)')
         fig_comp.update_layout(
-            xaxis_title="Data", yaxis_title="Performance Normalizada",
-            xaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
-            yaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
-            height=400
+            height=400,
+            xaxis=dict(title="Data", title_font=dict(size=14), tickfont=dict(size=12)),
+            yaxis=dict(title="Performance Normalizada", title_font=dict(size=14), tickfont=dict(size=12))
         )
         _, col_graf, _ = st.columns([1, 3, 1])
         with col_graf:
@@ -474,9 +470,8 @@ if 'advanced_result' in st.session_state and st.session_state['advanced_result']
             fig_fi = px.bar(bt['feature_importance_df'].head(15), x='Importance', y='Feature', orientation='h', title='Top 15 Features Mais Importantes')
             fig_fi.update_layout(
                 yaxis={'categoryorder':'total ascending'},
-                xaxis_title="Importância", yaxis_title="Feature",
-                xaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
-                yaxis=dict(title_font=dict(size=14), tickfont=dict(size=12))
+                xaxis=dict(title="Importância", title_font=dict(size=14), tickfont=dict(size=12)),
+                yaxis=dict(title="Feature", title_font=dict(size=14), tickfont=dict(size=12))
             )
             _, col_graf, _ = st.columns([1, 3, 1])
             with col_graf:
@@ -496,9 +491,9 @@ if 'advanced_result' in st.session_state and st.session_state['advanced_result']
         fig_sim.add_trace(go.Scatter(x=plot_df['Data'], y=plot_df['Comprar e Segurar (Buy & Hold)'], name='Buy & Hold', line=dict(color='gray', dash='dash')))
         
         fig_sim.update_layout(
-            title='Evolução do Capital (R$)', xaxis_title='Data', yaxis_title='Capital (R$)',
-            xaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
-            yaxis=dict(title_font=dict(size=14), tickfont=dict(size=12))
+            title_text='Evolução do Capital (R$)',
+            xaxis=dict(title="Data", title_font=dict(size=14), tickfont=dict(size=12)),
+            yaxis=dict(title="Capital (R$)", title_font=dict(size=14), tickfont=dict(size=12))
         )
         _, col_graf, _ = st.columns([1, 3, 1])
         with col_graf:

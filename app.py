@@ -2,6 +2,8 @@
 # Versão Final com:
 # - Ajustes de interface na seção "Importar e Comparar" para fontes maiores e layout compacto.
 # - Destaque com cores para as colunas de erro (R$ e %) na tabela de comparação.
+# - [NOVO] Lógica de busca de preço na Visão Geral mais robusta para evitar dados imprecisos.
+# - [NOVO] Gráfico de variação da cotação do dia adicionado à Visão Geral.
 
 import streamlit as st
 import pandas as pd
@@ -203,7 +205,7 @@ def backtest_ensemble(adv_df, features, include_lstm=HAS_TF, progress_callback=N
                 base_prices = adv_df['Close'].iloc[split:split+len(X_test)].values
                 preds_price = (1 + preds_ret) * base_prices
                 results['LSTM'] = {'price': compute_price_metrics(y_test_price.values, preds_price), 
-                                   'hitrate': compute_return_hitrate(y_test_ret.values, preds_ret)}
+                                     'hitrate': compute_return_hitrate(y_test_ret.values, preds_ret)}
                 trained['LSTM'] = {'pred_ret': preds_ret, 'pred_price': preds_price}
             except Exception as e:
                 results['LSTM'] = {'error': f"LSTM error: {e}"}
@@ -219,7 +221,7 @@ def backtest_ensemble(adv_df, features, include_lstm=HAS_TF, progress_callback=N
     base_prices = adv_df['Close'].iloc[split:split+len(X_test)].values
     ensemble_ret = ensemble_price / base_prices - 1
     results['Ensemble'] = {'price': compute_price_metrics(y_test_price.values, ensemble_price), 
-                           'hitrate': compute_return_hitrate(y_test_ret.values, ensemble_ret)}
+                             'hitrate': compute_return_hitrate(y_test_ret.values, ensemble_ret)}
 
     feature_importance_df = None
     if trained_rf_model:
@@ -257,24 +259,96 @@ if data.empty or len(data) < 1:
     st.stop()
 data = calculate_indicators(data)
 
+# --- [INÍCIO DA SEÇÃO MODIFICADA] ---
 st.subheader('📈 Visão Geral do Ativo')
+ticker_obj = yf.Ticker(ticker)
+
+# Tenta obter o preço mais recente de forma robusta e os dados intraday para o gráfico
 try:
-    live_data = yf.Ticker(ticker).history(period='1d', interval='5m')
-    if not live_data.empty:
+    # Prioriza o fast_info para o preço mais recente, que é mais leve e preciso
+    last_price_info = ticker_obj.fast_info.get('lastPrice')
+    # Pega o histórico intraday para o gráfico
+    live_data = ticker_obj.history(period='1d', interval='5m')
+    
+    # Define o 'last_price' com uma hierarquia de fontes para robustez
+    if last_price_info and isfinite(last_price_info) and last_price_info > 0:
+        last_price = last_price_info
+    elif not live_data.empty:
         last_price = live_data['Close'].iloc[-1]
     else:
+        # Fallback para o último fechamento do histórico diário se não houver dados ao vivo
         last_price = data['Close'].iloc[-1]
 except Exception:
+    # Fallback final em caso de erro de conexão ou API
+    live_data = pd.DataFrame() # Garante que live_data seja um DataFrame vazio
     last_price = data['Close'].iloc[-1]
+
 prev_price = data['Close'].iloc[-2] if len(data) >= 2 else last_price
 price_change = last_price - prev_price
 percent_change = (price_change / prev_price * 100) if prev_price != 0 else 0.0
+
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("🏢 Empresa", company_name)
 c2.metric("💹 Ticker", ticker_symbol)
 c3.metric("💰 Último Preço", f"R$ {last_price:.2f}")
 c4.metric("📊 Variação (vs. Fech. Anterior)", f"{price_change:+.2f} R$", f"{percent_change:+.2f}%")
+
+# NOVO: GRÁFICO DE VARIAÇÃO INTRADAY
+if not live_data.empty and len(live_data) > 1:
+    fig_live = go.Figure()
+
+    # Define a cor da linha baseada na variação em relação ao fechamento anterior
+    line_color = '#2ECC71' if last_price >= prev_price else '#E74C3C'
+
+    # Adiciona a linha do preço
+    fig_live.add_trace(go.Scatter(
+        x=live_data.index,
+        y=live_data['Close'],
+        mode='lines',
+        name='Preço',
+        line=dict(color=line_color, width=2.5)
+    ))
+    
+    # Adiciona a área preenchida abaixo da linha para melhor visualização
+    fig_live.add_trace(go.Scatter(
+        x=live_data.index,
+        y=live_data['Close'],
+        fill='tozeroy',
+        mode='none',
+        fillcolor='rgba(46, 204, 113, 0.1)' if line_color == '#2ECC71' else 'rgba(231, 76, 60, 0.1)'
+    ))
+
+    # Adiciona linha de referência do fechamento anterior
+    fig_live.add_hline(
+        y=prev_price,
+        line_dash="dash",
+        line_color="grey",
+        annotation_text=f"Fechamento Anterior: R$ {prev_price:.2f}",
+        annotation_position="bottom right"
+    )
+
+    # Configura o layout do gráfico para uma aparência limpa e informativa
+    fig_live.update_layout(
+        title_text="<b>Variação da Cotação no Dia</b>",
+        title_x=0.5,
+        xaxis_title=None,
+        yaxis_title="Preço (R$)",
+        showlegend=False,
+        height=350,
+        margin=dict(l=40, r=40, t=50, b=10),
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        yaxis=dict(gridcolor='rgba(255, 255, 255, 0.1)'),
+        xaxis=dict(gridcolor='rgba(255, 255, 255, 0.1)'),
+        font=dict(color='white')
+    )
+    st.plotly_chart(fig_live, use_container_width=True)
+else:
+    st.info("ℹ️ Gráfico de variação diária não disponível (mercado fechado ou sem dados).")
+
 st.markdown("---")
+# --- [FIM DA SEÇÃO MODIFICADA] ---
+
 
 tab1, tab2, tab3 = st.tabs(["Preço e Indicadores", "Volatilidade", "Comparativo com IBOVESPA"])
 view_slice = slice(-viz_days, None) if viz_days is not None else slice(None)

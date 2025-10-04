@@ -1,9 +1,9 @@
+
 # app.py
 # Versão Final com:
-# - Ajustes de interface na seção "Importar e Comparar" para fontes maiores e layout compacto.
-# - Destaque com cores para as colunas de erro (R$ e %) na tabela de comparação.
-# - [Corrigido] Gráfico de variação da cotação do dia com range do eixo Y dinâmico.
-# - [NOVO] Eixo X do gráfico intraday condensado para melhor visualização (máx. 5 marcações).
+# - [Corrigido] Gráfico de variação da cotação do dia com range do eixo Y dinâmico e eixo X condensado.
+# - [NOVO] Todos os gráficos foram comprimidos horizontalmente para melhor proporção visual.
+# - [NOVO] As fontes dos eixos de todos os gráficos foram aumentadas para melhor legibilidade.
 
 import streamlit as st
 import pandas as pd
@@ -263,27 +263,22 @@ st.subheader('📈 Visão Geral do Ativo')
 ticker_obj = yf.Ticker(ticker)
 
 try:
-    # Prioriza o fast_info para o preço mais recente, que é mais leve e preciso
     last_price_info = ticker_obj.fast_info.get('lastPrice')
-    
-    # Tenta obter dados intraday com intervalo de 1 minuto
     try:
         live_data = ticker_obj.history(period='1d', interval='1m')
-        if live_data.empty: # Fallback para 5m se 1m não retornar dados
+        if live_data.empty:
              live_data = ticker_obj.history(period='1d', interval='5m')
     except Exception:
-        live_data = pd.DataFrame() # Garante que live_data seja um DataFrame vazio em caso de erro
+        live_data = pd.DataFrame()
 
-    # Define o 'last_price' com uma hierarquia de fontes para robustez
     if last_price_info and isfinite(last_price_info) and last_price_info > 0:
         last_price = last_price_info
     elif not live_data.empty:
         last_price = live_data['Close'].iloc[-1]
     else:
-        # Fallback para o último fechamento do histórico diário se não houver dados ao vivo
         last_price = data['Close'].iloc[-1]
 except Exception:
-    live_data = pd.DataFrame() # Garante que live_data seja um DataFrame vazio
+    live_data = pd.DataFrame()
     last_price = data['Close'].iloc[-1]
 
 prev_price = data['Close'].iloc[-2] if len(data) >= 2 else last_price
@@ -296,66 +291,51 @@ c2.metric("💹 Ticker", ticker_symbol)
 c3.metric("💰 Último Preço", f"R$ {last_price:.2f}")
 c4.metric("📊 Variação (vs. Fech. Anterior)", f"{price_change:+.2f} R$", f"{percent_change:+.2f}%")
 
-# NOVO: GRÁFICO DE VARIAÇÃO INTRADAY
 if not live_data.empty and len(live_data) > 1:
     fig_live = go.Figure()
 
-    # Define a cor da linha baseada na variação em relação ao fechamento anterior
     line_color = '#2ECC71' if last_price >= prev_price else '#E74C3C'
 
-    # Adiciona a linha do preço
     fig_live.add_trace(go.Scatter(
-        x=live_data.index,
-        y=live_data['Close'],
-        mode='lines',
-        name='Preço',
+        x=live_data.index, y=live_data['Close'], mode='lines', name='Preço',
         line=dict(color=line_color, width=2.5)
     ))
     
-    # Adiciona a área preenchida abaixo da linha para melhor visualização
     fig_live.add_trace(go.Scatter(
-        x=live_data.index,
-        y=live_data['Close'],
-        fill='tozeroy',
-        mode='none',
+        x=live_data.index, y=live_data['Close'], fill='tozeroy', mode='none',
         fillcolor='rgba(46, 204, 113, 0.1)' if line_color == '#2ECC71' else 'rgba(231, 76, 60, 0.1)'
     ))
 
-    # Adiciona linha de referência do fechamento anterior
     fig_live.add_hline(
-        y=prev_price,
-        line_dash="dash",
-        line_color="grey",
-        annotation_text=f"Fechamento Anterior: R$ {prev_price:.2f}",
-        annotation_position="bottom right"
+        y=prev_price, line_dash="dash", line_color="grey",
+        annotation_text=f"Fechamento Anterior: R$ {prev_price:.2f}", annotation_position="bottom right"
     )
 
-    # AJUSTE O RANGE DO EIXO Y DINAMICAMENTE
     min_price_day = live_data['Close'].min()
     max_price_day = live_data['Close'].max()
-    
     min_val = min(min_price_day, prev_price) * 0.995 - 0.05
     max_val = max(max_price_day, prev_price) * 1.005 + 0.05
 
     fig_live.update_layout(
-        title_text="<b>Variação da Cotação no Dia</b>",
-        title_x=0.5,
-        xaxis_title=None,
-        yaxis_title="Preço (R$)",
-        showlegend=False,
-        height=350,
+        title_text="<b>Variação da Cotação no Dia</b>", title_x=0.5,
+        yaxis_title="Preço (R$)", showlegend=False, height=400,
         margin=dict(l=40, r=40, t=50, b=10),
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        yaxis=dict(gridcolor='rgba(255, 255, 255, 0.1)', range=[min_val, max_val]),
+        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+        yaxis=dict(
+            gridcolor='rgba(255, 255, 255, 0.1)', range=[min_val, max_val],
+            title_font=dict(size=14), tickfont=dict(size=12)
+        ),
         xaxis=dict(
-            gridcolor='rgba(255, 255, 255, 0.1)',
-            tickformat="%H:%M",
-            nticks=5  # --- AQUI É A MUDANÇA PARA CONDENSAR O EIXO X ---
+            gridcolor='rgba(255, 255, 255, 0.1)', tickformat="%H:%M", nticks=5,
+            title_font=dict(size=14), tickfont=dict(size=12)
         ),
         font=dict(color='white')
     )
-    st.plotly_chart(fig_live, use_container_width=True)
+    
+    # Colunas para comprimir o gráfico
+    _, col_grafico, _ = st.columns([1, 3, 1])
+    with col_grafico:
+        st.plotly_chart(fig_live, use_container_width=True)
 else:
     st.info("ℹ️ Gráfico de variação diária não disponível (mercado fechado ou sem dados intraday).")
 
@@ -377,13 +357,31 @@ with tab1:
         fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['MM_Longa'][view_slice], name='Média Móvel 50 Dias', line=dict(color='purple', dash='dash')))
         fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['MM_Curta'][view_slice], name='Banda Média (MM 20 Dias)', line=dict(color='yellow', width=1.5)))
         fig.add_trace(go.Scatter(x=data.index[view_slice], y=data['Close'][view_slice], name='Preço de Fechamento', line=dict(color='cyan', width=2)))
-        st.plotly_chart(fig, use_container_width=True)
+        
+        fig.update_layout(
+            xaxis_title="Data", yaxis_title="Preço (R$)",
+            xaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
+            yaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
+            height=450
+        )
+        _, col_graf, _ = st.columns([1, 3, 1])
+        with col_graf:
+            st.plotly_chart(fig, use_container_width=True)
         
         st.subheader('Índice de Força Relativa (RSI)')
         fig_rsi = px.line(data[view_slice], x=data.index[view_slice], y='RSI', title='RSI')
         fig_rsi.add_hline(y=70, line_dash="dash", annotation_text="Sobrecompra")
         fig_rsi.add_hline(y=30, line_dash="dash", annotation_text="Sobrevenda")
-        st.plotly_chart(fig_rsi, use_container_width=True)
+        
+        fig_rsi.update_layout(
+            xaxis_title="Data", yaxis_title="RSI",
+            xaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
+            yaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
+            height=400
+        )
+        _, col_graf_rsi, _ = st.columns([1, 3, 1])
+        with col_graf_rsi:
+            st.plotly_chart(fig_rsi, use_container_width=True)
 
 with tab2:
     st.subheader('Volatilidade (janela de 30 dias)')
@@ -391,7 +389,16 @@ with tab2:
         st.info("Volatilidade não disponível por dados históricos insuficientes.")
     else:
         fig_vol = px.line(data[view_slice], x=data.index[view_slice], y='Volatility', title='Volatilidade Anualizada')
-        st.plotly_chart(fig_vol, use_container_width=True)
+        fig_vol.update_layout(
+            xaxis_title="Data", yaxis_title="Volatilidade",
+            xaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
+            yaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
+            height=400
+        )
+        _, col_graf, _ = st.columns([1, 3, 1])
+        with col_graf:
+            st.plotly_chart(fig_vol, use_container_width=True)
+
         current_vol = float(data['Volatility'].iloc[-1]) if pd.notna(data['Volatility'].iloc[-1]) else 0.0
         if current_vol >= 0.5: vol_label, vol_color = "ALTA VOLATILIDADE", "#E74C3C"
         elif current_vol >= 0.25: vol_label, vol_color = "VOLATILIDADE MÉDIA", "#F1C40F"
@@ -409,7 +416,15 @@ with tab3:
             ticker_symbol: data.loc[common_idx, 'Close'] / data.loc[common_idx[0], 'Close']
         })
         fig_comp = px.line(comp_df, x=comp_df.index, y=comp_df.columns, title='Performance Normalizada (base 1)')
-        st.plotly_chart(fig_comp, use_container_width=True)
+        fig_comp.update_layout(
+            xaxis_title="Data", yaxis_title="Performance Normalizada",
+            xaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
+            yaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
+            height=400
+        )
+        _, col_graf, _ = st.columns([1, 3, 1])
+        with col_graf:
+            st.plotly_chart(fig_comp, use_container_width=True)
 st.markdown("---")
 
 st.subheader('🔮 Previsão Avançada e Análise de Performance')
@@ -457,7 +472,15 @@ if 'advanced_result' in st.session_state and st.session_state['advanced_result']
         st.info("Este gráfico mostra quais variáveis o modelo Random Forest considerou mais importantes para fazer suas previsões.")
         if bt.get('feature_importance_df') is not None:
             fig_fi = px.bar(bt['feature_importance_df'].head(15), x='Importance', y='Feature', orientation='h', title='Top 15 Features Mais Importantes')
-            st.plotly_chart(fig_fi.update_layout(yaxis={'categoryorder':'total ascending'}), use_container_width=True)
+            fig_fi.update_layout(
+                yaxis={'categoryorder':'total ascending'},
+                xaxis_title="Importância", yaxis_title="Feature",
+                xaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
+                yaxis=dict(title_font=dict(size=14), tickfont=dict(size=12))
+            )
+            _, col_graf, _ = st.columns([1, 3, 1])
+            with col_graf:
+                st.plotly_chart(fig_fi, use_container_width=True)
         else:
             st.warning("Não foi possível gerar a importância das features.")
 
@@ -471,7 +494,15 @@ if 'advanced_result' in st.session_state and st.session_state['advanced_result']
         fig_sim = go.Figure()
         fig_sim.add_trace(go.Scatter(x=plot_df['Data'], y=plot_df['Estratégia do Modelo'], name='Estratégia do Modelo', line=dict(color='cyan')))
         fig_sim.add_trace(go.Scatter(x=plot_df['Data'], y=plot_df['Comprar e Segurar (Buy & Hold)'], name='Buy & Hold', line=dict(color='gray', dash='dash')))
-        st.plotly_chart(fig_sim.update_layout(title='Evolução do Capital (R$)', xaxis_title='Data', yaxis_title='Capital (R$)'), use_container_width=True)
+        
+        fig_sim.update_layout(
+            title='Evolução do Capital (R$)', xaxis_title='Data', yaxis_title='Capital (R$)',
+            xaxis=dict(title_font=dict(size=14), tickfont=dict(size=12)),
+            yaxis=dict(title_font=dict(size=14), tickfont=dict(size=12))
+        )
+        _, col_graf, _ = st.columns([1, 3, 1])
+        with col_graf:
+            st.plotly_chart(fig_sim, use_container_width=True)
 
     st.subheader("Projeção de Preço para os Próximos 5 Dias")
     trained, current_price, current_date = bt['trained'], data['Close'].iloc[-1], pd.to_datetime(data.index[-1])

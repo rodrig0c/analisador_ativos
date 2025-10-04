@@ -1,14 +1,8 @@
-# app.py
-# Versão Final com:
-# - Ajustes de interface na seção "Importar e Comparar" para fontes maiores e layout compacto.
-# - Destaque com cores para as colunas de erro (R$ e %) na tabela de comparação.
-# - [NOVO] Lógica de busca de preço na Visão Geral mais robusta para evitar dados imprecisos.
-# - [NOVO] Gráfico de variação da cotação do dia adicionado à Visão Geral.
 
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-from datetime import date
+from datetime import date, datetime, time
 from pandas.tseries.offsets import BDay
 import plotly.express as px
 import plotly.graph_objects as go
@@ -259,17 +253,23 @@ if data.empty or len(data) < 1:
     st.stop()
 data = calculate_indicators(data)
 
-# --- [INÍCIO DA SEÇÃO MODIFICADA] ---
 st.subheader('📈 Visão Geral do Ativo')
 ticker_obj = yf.Ticker(ticker)
 
-# Tenta obter o preço mais recente de forma robusta e os dados intraday para o gráfico
 try:
     # Prioriza o fast_info para o preço mais recente, que é mais leve e preciso
     last_price_info = ticker_obj.fast_info.get('lastPrice')
-    # Pega o histórico intraday para o gráfico
-    live_data = ticker_obj.history(period='1d', interval='5m')
     
+    # Tenta obter dados intraday com intervalo de 1 minuto
+    # O período '1d' com '1m' pode falhar fora do horário de pregão ou para tickers sem muita liquidez,
+    # então usaremos um 'try-except' mais robusto aqui.
+    try:
+        live_data = ticker_obj.history(period='1d', interval='1m')
+        if live_data.empty: # Fallback para 5m se 1m não retornar dados
+             live_data = ticker_obj.history(period='1d', interval='5m')
+    except Exception:
+        live_data = pd.DataFrame() # Garante que live_data seja um DataFrame vazio em caso de erro
+
     # Define o 'last_price' com uma hierarquia de fontes para robustez
     if last_price_info and isfinite(last_price_info) and last_price_info > 0:
         last_price = last_price_info
@@ -279,7 +279,6 @@ try:
         # Fallback para o último fechamento do histórico diário se não houver dados ao vivo
         last_price = data['Close'].iloc[-1]
 except Exception:
-    # Fallback final em caso de erro de conexão ou API
     live_data = pd.DataFrame() # Garante que live_data seja um DataFrame vazio
     last_price = data['Close'].iloc[-1]
 
@@ -327,7 +326,15 @@ if not live_data.empty and len(live_data) > 1:
         annotation_position="bottom right"
     )
 
-    # Configura o layout do gráfico para uma aparência limpa e informativa
+    # --- AJUSTE O RANGE DO EIXO Y DINAMICAMENTE ---
+    min_price_day = live_data['Close'].min()
+    max_price_day = live_data['Close'].max()
+    
+    # Adiciona uma pequena margem (ex: 0.5% ou 0.10 centavos) para o zoom automático
+    # Garante que o prev_price também seja considerado no range para evitar cortes
+    min_val = min(min_price_day, prev_price) * 0.995 - 0.05 # Ajuste para ter margem inferior
+    max_val = max(max_price_day, prev_price) * 1.005 + 0.05 # Ajuste para ter margem superior
+
     fig_live.update_layout(
         title_text="<b>Variação da Cotação no Dia</b>",
         title_x=0.5,
@@ -338,16 +345,16 @@ if not live_data.empty and len(live_data) > 1:
         margin=dict(l=40, r=40, t=50, b=10),
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
-        yaxis=dict(gridcolor='rgba(255, 255, 255, 0.1)'),
-        xaxis=dict(gridcolor='rgba(255, 255, 255, 0.1)'),
+        yaxis=dict(gridcolor='rgba(255, 255, 255, 0.1)', range=[min_val, max_val]), # AQUI É A MUDANÇA
+        xaxis=dict(gridcolor='rgba(255, 255, 255, 0.1)',
+                   tickformat="%H:%M"), # Formata o eixo X para mostrar apenas hora e minuto
         font=dict(color='white')
     )
     st.plotly_chart(fig_live, use_container_width=True)
 else:
-    st.info("ℹ️ Gráfico de variação diária não disponível (mercado fechado ou sem dados).")
+    st.info("ℹ️ Gráfico de variação diária não disponível (mercado fechado ou sem dados intraday).")
 
 st.markdown("---")
-# --- [FIM DA SEÇÃO MODIFICADA] ---
 
 
 tab1, tab2, tab3 = st.tabs(["Preço e Indicadores", "Volatilidade", "Comparativo com IBOVESPA"])

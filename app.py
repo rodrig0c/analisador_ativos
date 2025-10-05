@@ -1,6 +1,6 @@
 # app.py
 # Versão Final com:
-# - [Corrigido] SyntaxError por argumentos repetidos na configuração dos gráficos.
+# - [Corrigido] SyntaxError por argumentos repetidos no gráfico de Feature Importance.
 # - Gráficos comprimidos horizontalmente para melhor proporção visual.
 # - Fontes dos eixos dos gráficos aumentadas para melhor legibilidade.
 
@@ -469,9 +469,13 @@ if 'advanced_result' in st.session_state and st.session_state['advanced_result']
         if bt.get('feature_importance_df') is not None:
             fig_fi = px.bar(bt['feature_importance_df'].head(15), x='Importance', y='Feature', orientation='h', title='Top 15 Features Mais Importantes')
             fig_fi.update_layout(
-                yaxis={'categoryorder':'total ascending'},
                 xaxis=dict(title="Importância", title_font=dict(size=14), tickfont=dict(size=12)),
-                yaxis=dict(title="Feature", title_font=dict(size=14), tickfont=dict(size=12))
+                yaxis=dict(
+                    categoryorder='total ascending',
+                    title="Feature", 
+                    title_font=dict(size=14), 
+                    tickfont=dict(size=12)
+                )
             )
             _, col_graf, _ = st.columns([1, 3, 1])
             with col_graf:

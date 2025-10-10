@@ -748,6 +748,6 @@ if uploaded is not None:
 st.markdown("---")
 horario_consulta = pd.Timestamp.now(tz='America/Sao_Paulo').strftime('%d/%m/%Y %H:%M:%S')
 st.caption(f"Última consulta dos dados: **{horario_consulta}** — Dados: Yahoo Finance.")
-st.markdown(f"<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo</p>, unsafe_allow_html=True)
+st.markdown(f"<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo</p>", unsafe_allow_html=True)
 st.markdown(f"<p style='text-align:center;color:#888'>Logs gravados em: {LOG_FILE}</p>", unsafe_allow_html=True)
 logger.info("Interface carregada com parâmetros finais.")

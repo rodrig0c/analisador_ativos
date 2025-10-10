@@ -476,7 +476,7 @@ def validate_and_backtest(df_adv, features, method='rolling', static_split_ratio
 # Interface Streamlit
 # -----------------------
 st.title('📊 Assetz - Analisador de Ativos Profissional')
-st.write('Versão final com validações estática/rolling/expanding, logs de predição e gráficos restaurados.')
+st.write('Versão com validações estática/rolling/expanding, logs de predição e gráficos.')
 
 # Sidebar inputs
 st.sidebar.header('Parâmetros de Dados e Backtest')
@@ -748,6 +748,6 @@ if uploaded is not None:
 st.markdown("---")
 horario_consulta = pd.Timestamp.now(tz='America/Sao_Paulo').strftime('%d/%m/%Y %H:%M:%S')
 st.caption(f"Última consulta dos dados: **{horario_consulta}** — Dados: Yahoo Finance.")
-st.markdown(f"<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo | Versão do App: {APP_VERSION}</p>", unsafe_allow_html=True)
+st.markdown(f"<p style='text-align:center;color:#888'>Desenvolvido por Rodrigo Costa de Araujo, unsafe_allow_html=True)
 st.markdown(f"<p style='text-align:center;color:#888'>Logs gravados em: {LOG_FILE}</p>", unsafe_allow_html=True)
 logger.info("Interface carregada com parâmetros finais.")
